@@ -251,6 +251,24 @@ pub struct FileExplorerConfig {
     pub flatten_dirs: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct FileTreeConfig {
+    /// Whether the file tree is shown when the editor starts. Defaults to true.
+    pub open: bool,
+    /// Width of the file tree in columns. Defaults to 32.
+    pub width: u16,
+}
+
+impl Default for FileTreeConfig {
+    fn default() -> Self {
+        Self {
+            open: true,
+            width: 32,
+        }
+    }
+}
+
 impl Default for FileExplorerConfig {
     fn default() -> Self {
         Self {
@@ -366,6 +384,7 @@ pub struct Config {
     pub auto_info: bool,
     pub file_picker: FilePickerConfig,
     pub file_explorer: FileExplorerConfig,
+    pub file_tree: FileTreeConfig,
     /// Configuration of the statusline elements
     pub statusline: StatusLineConfig,
     /// Shape for cursor in each mode
@@ -1203,6 +1222,7 @@ impl Default for Config {
             auto_info: true,
             file_picker: FilePickerConfig::default(),
             file_explorer: FileExplorerConfig::default(),
+            file_tree: FileTreeConfig::default(),
             statusline: StatusLineConfig::default(),
             cursor_shape: CursorShapeConfig::default(),
             true_color: false,

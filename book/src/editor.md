@@ -7,6 +7,7 @@
 - [`[editor.cursor-shape]` Section](#editorcursor-shape-section)
 - [`[editor.file-picker]` Section](#editorfile-picker-section)
 - [`[editor.file-explorer]` Section](#editorfile-explorer-section)
+- [`[editor.file-tree]` Section](#editorfile-tree-section)
 - [`[editor.buffer-picker]` Section](#editorbuffer-picker-section)
 - [`[editor.auto-pairs]` Section](#editorauto-pairs-section)
 - [`[editor.auto-save]` Section](#editorauto-save-section)
@@ -250,6 +251,15 @@ Note that the ignore files consulted by the file explorer when `ignore` is set t
 |`git-global` | Enables reading global `.gitignore`, whose path is specified in git's config: `core.excludesfile` option | `false`
 |`git-exclude` | Enables reading `.git/info/exclude` files | `false`
 |`flatten-dirs` | Enables flattening single child directories | `true`
+
+### `[editor.file-tree]` Section
+
+The file tree is the sidebar on the left listing the workspace, the one `<space>T` focuses. It follows the focused buffer, expanding its directory and marking the file. Inside it, `j`/`k` move, `l`/`Enter` expand a directory or open a file, `h` collapses or jumps to the parent, `H` collapses everything, `R` reloads, `Esc` returns to the editor and `q` hides the tree (`<space>t` toggles it from the editor). `a` creates a file, or a directory when the name ends in `/`, next to the cursor; `r` renames the entry under the cursor, moving its open buffers along; `d` deletes it after confirmation. A click opens or expands the row under the mouse. What it lists follows the `[editor.file-explorer]` options and nothing else: the helix ignore files narrow what a search or a picker walks, never what the tree shows.
+
+| Key | Description | Default |
+|--|--|---------|
+| `open` | Whether the tree is shown when the editor starts | `true` |
+| `width` | Width of the tree in columns | `32` |
 
 ### `[editor.buffer-picker]` Section
 

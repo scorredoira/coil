@@ -7,6 +7,7 @@ use crate::{
     keymap::{KeymapResult, Keymaps},
     ui::{
         document::{render_document, LinePos, TextRenderer},
+        file_tree::FileTree,
         statusline,
         text_decorations::{self, Decoration, DecorationManager, InlineDiagnostics},
         Completion, ProgressSpinners,
@@ -44,6 +45,7 @@ pub struct EditorView {
     spinners: ProgressSpinners,
     /// Tracks if the terminal window is focused by reaction to terminal focus events
     terminal_focused: bool,
+    pub(crate) file_tree: FileTree,
     /// The bufferline tabs of the last frame, so a click can land on one.
     bufferline_tabs: Vec<BufferlineTab>,
 }
@@ -67,7 +69,7 @@ pub enum InsertEvent {
 }
 
 impl EditorView {
-    pub fn new(keymaps: Keymaps) -> Self {
+    pub fn new(keymaps: Keymaps, file_tree: FileTree) -> Self {
         Self {
             keymaps,
             on_next_key: None,
@@ -76,6 +78,7 @@ impl EditorView {
             completion: None,
             spinners: ProgressSpinners::default(),
             terminal_focused: true,
+            file_tree,
             bufferline_tabs: Vec::new(),
         }
     }
@@ -1242,6 +1245,10 @@ impl EditorView {
             ..
         } = *event;
 
+        if self.file_tree.contains(row, column) {
+            return self.file_tree.handle_mouse(event, cxt);
+        }
+
         if kind == MouseEventKind::Down(MouseButton::Left) {
             if let Some(doc_id) = self.bufferline_tab_at(row, column) {
                 cxt.editor
@@ -1528,6 +1535,21 @@ impl Component for EditorView {
 
                 let mode = cx.editor.mode();
 
+                if self.file_tree.focused && self.on_next_key.is_none() {
+                    self.file_tree.handle_key(key, &mut cx);
+                    // A prompt the tree opened rides on the callbacks, like a command's.
+                    let callbacks = take(&mut cx.callback);
+                    if callbacks.is_empty() {
+                        return EventResult::Consumed(None);
+                    }
+                    let callback: crate::compositor::Callback = Box::new(move |compositor, cx| {
+                        for callback in callbacks {
+                            callback(compositor, cx)
+                        }
+                    });
+                    return EventResult::Consumed(Some(callback));
+                }
+
                 if !self.on_next_key(OnKeyCallbackKind::PseudoPending, &mut cx, key) {
                     match mode {
                         Mode::Insert => {
@@ -1663,6 +1685,12 @@ impl Component for EditorView {
 
         // -1 for commandline and -1 for bufferline
         let mut editor_area = area.clip_bottom(1);
+        if self.file_tree.open {
+            let tree_width = config.file_tree.width.min(area.width.saturating_sub(20));
+            let tree_area = editor_area.with_width(tree_width);
+            self.file_tree.render(tree_area, surface, cx.editor);
+            editor_area = editor_area.clip_left(tree_width);
+        }
         if use_bufferline {
             editor_area = editor_area.clip_top(1);
         }
@@ -1671,14 +1699,15 @@ impl Component for EditorView {
         cx.editor.resize(editor_area);
 
         if use_bufferline {
-            self.render_bufferline(cx.editor, area.with_height(1), surface);
+            let bufferline_area = Rect::new(editor_area.x, area.y, editor_area.width, 1);
+            self.render_bufferline(cx.editor, bufferline_area, surface);
         } else {
             self.bufferline_tabs.clear();
         }
 
         for (view, is_focused) in cx.editor.tree.views() {
             let doc = cx.editor.document(view.doc).unwrap();
-            self.render_view(cx.editor, doc, view, area, surface, is_focused);
+            self.render_view(cx.editor, doc, view, editor_area, surface, is_focused);
         }
 
         if config.auto_info {
@@ -1770,6 +1799,9 @@ impl Component for EditorView {
     }
 
     fn cursor(&self, _area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
+        if self.file_tree.focused {
+            return (None, CursorKind::Hidden);
+        }
         match editor.cursor() {
             // all block cursors are drawn manually
             (pos, CursorKind::Block) => {

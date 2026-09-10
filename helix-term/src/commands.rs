@@ -413,6 +413,8 @@ impl MappableCommand {
         file_explorer, "Open file explorer in workspace root",
         file_explorer_in_current_buffer_directory, "Open file explorer at current buffer's directory",
         file_explorer_in_current_directory, "Open file explorer at current working directory",
+        file_tree_focus, "Focus the file tree, opening it if closed",
+        file_tree_toggle, "Show or hide the file tree",
         code_action, "Perform code action",
         buffer_picker, "Open buffer picker",
         jumplist_picker, "Open jumplist picker",
@@ -3867,6 +3869,20 @@ fn file_explorer_in_current_directory(cx: &mut Context) {
     if let Ok(picker) = ui::file_explorer(cwd, cx.editor) {
         cx.push_layer(Box::new(overlaid(picker)));
     }
+}
+
+fn file_tree_focus(cx: &mut Context) {
+    cx.callback.push(Box::new(|compositor, cx| {
+        let editor_view = compositor.find::<ui::EditorView>().unwrap();
+        editor_view.file_tree.focus(cx.editor);
+    }));
+}
+
+fn file_tree_toggle(cx: &mut Context) {
+    cx.callback.push(Box::new(|compositor, _cx| {
+        let editor_view = compositor.find::<ui::EditorView>().unwrap();
+        editor_view.file_tree.toggle();
+    }));
 }
 
 struct PathStyleConfig {

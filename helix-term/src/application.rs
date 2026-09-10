@@ -136,7 +136,10 @@ impl Application {
         let keys = Box::new(Map::new(Arc::clone(&config), |config: &Config| {
             &config.keys
         }));
-        let editor_view = Box::new(ui::EditorView::new(Keymaps::new(keys)));
+        let file_tree_open = config.load().editor.file_tree.open;
+        let file_tree =
+            ui::file_tree::FileTree::new(helix_loader::find_workspace().0, file_tree_open);
+        let editor_view = Box::new(ui::EditorView::new(Keymaps::new(keys), file_tree));
         compositor.push(editor_view);
 
         let jobs = Jobs::new();

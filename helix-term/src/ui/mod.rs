@@ -1,6 +1,7 @@
 mod completion;
 mod document;
 pub(crate) mod editor;
+pub mod file_tree;
 mod info;
 pub mod lsp;
 mod markdown;
@@ -364,13 +365,23 @@ pub fn file_explorer(root: PathBuf, editor: &Editor) -> Result<FileExplorer, std
 }
 
 fn directory_content(root: &Path, editor: &Editor) -> Result<Vec<(PathBuf, bool)>, std::io::Error> {
+    directory_entries(root, editor, true)
+}
+
+/// Lists a directory the way the explorer config says. The helix ignore files
+/// (`.helix/ignore`, the one in the config dir) are a search concern: the file tree
+/// passes `false` and shows what is on disk.
+pub(crate) fn directory_entries(
+    root: &Path,
+    editor: &Editor,
+    helix_ignore_files: bool,
+) -> Result<Vec<(PathBuf, bool)>, std::io::Error> {
     use ignore::WalkBuilder;
 
     let config = editor.config();
 
     let mut walk_builder = WalkBuilder::new(root);
-
-    let mut content: Vec<(PathBuf, bool)> = walk_builder
+    walk_builder
         .hidden(config.file_explorer.hidden)
         .parents(config.file_explorer.parents)
         .ignore(config.file_explorer.ignore)
@@ -379,9 +390,14 @@ fn directory_content(root: &Path, editor: &Editor) -> Result<Vec<(PathBuf, bool)
         .git_global(config.file_explorer.git_global)
         .git_exclude(config.file_explorer.git_exclude)
         .max_depth(Some(1))
-        .add_custom_ignore_filename(helix_loader::config_dir().join("ignore"))
-        .add_custom_ignore_filename(".helix/ignore")
-        .types(get_excluded_types())
+        .types(get_excluded_types());
+    if helix_ignore_files {
+        walk_builder
+            .add_custom_ignore_filename(helix_loader::config_dir().join("ignore"))
+            .add_custom_ignore_filename(".helix/ignore");
+    }
+
+    let mut content: Vec<(PathBuf, bool)> = walk_builder
         .build()
         .filter_map(|entry| {
             entry
