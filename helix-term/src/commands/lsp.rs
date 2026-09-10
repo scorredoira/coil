@@ -450,7 +450,7 @@ pub fn symbol_picker(cx: &mut Context) {
 }
 
 pub fn workspace_symbol_picker(cx: &mut Context) {
-    use crate::ui::picker::Injector;
+    use crate::ui::picker::{Injector, PanelInput};
 
     let doc = doc!(cx.editor);
     if doc
@@ -463,72 +463,74 @@ pub fn workspace_symbol_picker(cx: &mut Context) {
         return;
     }
 
-    let get_symbols = |pattern: &str, editor: &mut Editor, _data, injector: &Injector<_, _>| {
-        let doc = doc!(editor);
-        let mut seen_language_servers = HashSet::new();
-        let mut futures: FuturesUnordered<_> = doc
-            .language_servers_with_feature(LanguageServerFeature::WorkspaceSymbols)
-            .filter(|ls| seen_language_servers.insert(ls.id()))
-            .map(|language_server| {
-                let request = language_server
-                    .workspace_symbols(pattern.to_string())
-                    .unwrap();
-                let offset_encoding = language_server.offset_encoding();
-                async move {
-                    let symbols = request
-                        .await?
-                        .and_then(|resp| match resp {
-                            lsp::WorkspaceSymbolResponse::Flat(symbols) => Some(symbols),
-                            lsp::WorkspaceSymbolResponse::Nested(_) => None,
-                        })
-                        .unwrap_or_default();
-
-                    let response: Vec<_> = symbols
-                        .into_iter()
-                        .filter_map(|symbol| {
-                            let uri = match Uri::try_from(&symbol.location.uri) {
-                                Ok(uri) => uri,
-                                Err(err) => {
-                                    log::warn!("discarding symbol with invalid URI: {err}");
-                                    return None;
-                                }
-                            };
-                            Some(SymbolInformationItem {
-                                location: Location {
-                                    uri,
-                                    range: symbol.location.range,
-                                    offset_encoding,
-                                },
-                                symbol,
+    let get_symbols =
+        |input: &PanelInput, editor: &mut Editor, _data, injector: &Injector<_, _>| {
+            let pattern = input.query();
+            let doc = doc!(editor);
+            let mut seen_language_servers = HashSet::new();
+            let mut futures: FuturesUnordered<_> = doc
+                .language_servers_with_feature(LanguageServerFeature::WorkspaceSymbols)
+                .filter(|ls| seen_language_servers.insert(ls.id()))
+                .map(|language_server| {
+                    let request = language_server
+                        .workspace_symbols(pattern.to_string())
+                        .unwrap();
+                    let offset_encoding = language_server.offset_encoding();
+                    async move {
+                        let symbols = request
+                            .await?
+                            .and_then(|resp| match resp {
+                                lsp::WorkspaceSymbolResponse::Flat(symbols) => Some(symbols),
+                                lsp::WorkspaceSymbolResponse::Nested(_) => None,
                             })
-                        })
-                        .collect();
+                            .unwrap_or_default();
 
-                    anyhow::Ok(response)
-                }
-            })
-            .collect();
+                        let response: Vec<_> = symbols
+                            .into_iter()
+                            .filter_map(|symbol| {
+                                let uri = match Uri::try_from(&symbol.location.uri) {
+                                    Ok(uri) => uri,
+                                    Err(err) => {
+                                        log::warn!("discarding symbol with invalid URI: {err}");
+                                        return None;
+                                    }
+                                };
+                                Some(SymbolInformationItem {
+                                    location: Location {
+                                        uri,
+                                        range: symbol.location.range,
+                                        offset_encoding,
+                                    },
+                                    symbol,
+                                })
+                            })
+                            .collect();
 
-        if futures.is_empty() {
-            editor.set_error("No configured language server supports workspace symbols");
-        }
-
-        let injector = injector.clone();
-        async move {
-            while let Some(response) = futures.next().await {
-                match response {
-                    Ok(items) => {
-                        for item in items {
-                            injector.push(item)?;
-                        }
+                        anyhow::Ok(response)
                     }
-                    Err(err) => log::error!("Error requesting workspace symbols: {err}"),
-                }
+                })
+                .collect();
+
+            if futures.is_empty() {
+                editor.set_error("No configured language server supports workspace symbols");
             }
-            Ok(())
-        }
-        .boxed()
-    };
+
+            let injector = injector.clone();
+            async move {
+                while let Some(response) = futures.next().await {
+                    match response {
+                        Ok(items) => {
+                            for item in items {
+                                injector.push(item)?;
+                            }
+                        }
+                        Err(err) => log::error!("Error requesting workspace symbols: {err}"),
+                    }
+                }
+                Ok(())
+            }
+            .boxed()
+        };
     let columns = [
         ui::PickerColumn::new("kind", |item: &SymbolInformationItem, _| {
             display_symbol_kind(item.symbol.kind).into()

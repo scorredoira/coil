@@ -47,6 +47,8 @@ use helix_core::{
 use helix_view::{
     editor::Action,
     graphics::{CursorKind, Margin, Modifier, Rect},
+    input::KeyEvent,
+    keyboard::{KeyCode, KeyModifiers},
     theme::Style,
     view::ViewPosition,
     Document, DocumentId, Editor,
@@ -236,7 +238,70 @@ impl<T, D> Column<T, D> {
 /// Returns a new list of options to replace the contents of the picker
 /// when called with the current picker query,
 type DynQueryCallback<T, D> =
-    fn(&str, &mut Editor, Arc<D>, &Injector<T, D>) -> BoxFuture<'static, anyhow::Result<()>>;
+    fn(&PanelInput, &mut Editor, Arc<D>, &Injector<T, D>) -> BoxFuture<'static, anyhow::Result<()>>;
+
+/// A switch drawn at the right end of the picker's query line. `Tab` walks onto it
+/// and `Space` flips it; `Alt` + `key` flips it from anywhere.
+pub struct PanelToggle {
+    name: &'static str,
+    label: &'static str,
+    key: char,
+    on: bool,
+}
+
+impl PanelToggle {
+    pub fn new(name: &'static str, label: &'static str, key: char, on: bool) -> Self {
+        Self {
+            name,
+            label,
+            key,
+            on,
+        }
+    }
+}
+
+/// Every input of a picker at one moment: the query, the `%field` prefixes typed
+/// beside it and the switches. This is what a dynamic query is re-run against, so
+/// flipping a switch refreshes the results the same way typing does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PanelInput {
+    query: Arc<str>,
+    fields: Vec<(Arc<str>, Arc<str>)>,
+    toggles: Vec<(&'static str, bool)>,
+}
+
+impl Default for PanelInput {
+    fn default() -> Self {
+        Self {
+            query: "".into(),
+            fields: Vec::new(),
+            toggles: Vec::new(),
+        }
+    }
+}
+
+impl PanelInput {
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
+    /// The text of the named `%field`, empty when nothing was typed for it.
+    pub fn field(&self, name: &str) -> &str {
+        self.fields
+            .iter()
+            .find(|(field, _)| &**field == name)
+            .map(|(_, value)| &**value)
+            .unwrap_or_default()
+    }
+
+    /// Whether the named switch is on, false when the picker declares no such switch.
+    pub fn toggle(&self, name: &str) -> bool {
+        self.toggles
+            .iter()
+            .find(|(toggle, _)| *toggle == name)
+            .is_some_and(|(_, on)| *on)
+    }
+}
 
 pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     columns: Arc<[Column<T, D>]>,
@@ -251,6 +316,19 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     cursor: u32,
     prompt: Prompt,
     query: PickerQuery,
+
+    /// Switches drawn at the right end of the query line. Empty for an ordinary
+    /// picker, which then renders exactly as it always did.
+    panel_toggles: Vec<PanelToggle>,
+    /// Where the focus ring is: 0 is the query line, 1 the first switch.
+    focus: usize,
+    /// Where each switch was last drawn, so the cursor can sit on the focused one.
+    /// Filled during render, which the compositor always runs before asking for the
+    /// cursor.
+    toggle_positions: Vec<Position>,
+    /// What `Alt-a` does with the panel's inputs and the results on screen. The
+    /// search panel replaces every match with it.
+    panel_action: Option<PanelCallback<T>>,
 
     /// Whether to show the preview panel (default true)
     show_preview: bool,
@@ -383,6 +461,10 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             cursor: 0,
             prompt,
             query,
+            panel_toggles: Vec::new(),
+            focus: 0,
+            toggle_positions: Vec::new(),
+            panel_action: None,
             truncate_start: true,
             show_preview: true,
             callback_fn: Box::new(callback_fn),
@@ -434,6 +516,22 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         self
     }
 
+    /// Switches drawn at the right end of the query line, flipped with `Alt` + the
+    /// switch's own key. Flipping one refreshes a dynamic query.
+    pub fn with_toggles(mut self, toggles: Vec<PanelToggle>) -> Self {
+        self.panel_toggles = toggles;
+        self
+    }
+
+    /// What `Alt-a` runs: the panel's inputs and every result currently on screen.
+    pub fn with_panel_action(
+        mut self,
+        action: impl Fn(&mut Context, &PanelInput, &[&T]) + 'static,
+    ) -> Self {
+        self.panel_action = Some(Box::new(action));
+        self
+    }
+
     pub fn with_dynamic_query(
         mut self,
         callback: DynQueryCallback<T, D>,
@@ -441,7 +539,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
     ) -> Self {
         let handler = DynamicQueryHandler::new(callback, debounce_ms).spawn();
         let event = DynamicQueryChange {
-            query: self.primary_query(),
+            input: self.panel_input(),
             // Treat the initial query as a paste.
             is_paste: true,
         };
@@ -512,6 +610,46 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             .unwrap_or_else(|| "".into())
     }
 
+    fn panel_input(&self) -> PanelInput {
+        let fields = self
+            .columns
+            .iter()
+            .filter(|column| !column.filter)
+            .filter_map(|column| {
+                let value = self.query.get(&column.name)?;
+                Some((column.name.clone(), value.clone()))
+            })
+            .collect();
+        let toggles = self
+            .panel_toggles
+            .iter()
+            .map(|toggle| (toggle.name, toggle.on))
+            .collect();
+
+        PanelInput {
+            query: self.primary_query(),
+            fields,
+            toggles,
+        }
+    }
+
+    /// Moves the focus ring: the query line, then each switch, then back.
+    fn focus_by(&mut self, direction: Direction) {
+        let stops = self.panel_toggles.len() + 1;
+
+        let next = match direction {
+            Direction::Forward => self.focus + 1,
+            Direction::Backward => self.focus + stops - 1,
+        };
+
+        self.focus = next % stops;
+    }
+
+    /// The switch the focus ring is on, if it is not on the query line.
+    fn focused_toggle(&self) -> Option<usize> {
+        self.focus.checked_sub(1)
+    }
+
     fn header_height(&self) -> u16 {
         if self.columns.len() > 1 {
             1
@@ -528,7 +666,22 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         if let EventResult::Consumed(_) = self.prompt.handle_event(event, cx) {
             self.handle_prompt_change(matches!(event, Event::Paste(_)));
         }
+
         EventResult::Consumed(None)
+    }
+
+    fn panel_toggle_at(&self, event: KeyEvent) -> Option<usize> {
+        if event.modifiers != KeyModifiers::ALT {
+            return None;
+        }
+
+        let KeyCode::Char(pressed) = event.code else {
+            return None;
+        };
+
+        self.panel_toggles
+            .iter()
+            .position(|toggle| toggle.key == pressed)
     }
 
     fn handle_prompt_change(&mut self, is_paste: bool) {
@@ -571,13 +724,21 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         }
         // If this is a dynamic picker, notify the query hook that the primary
         // query might have been updated.
-        if let Some(handler) = &self.dynamic_query_handler {
-            let event = DynamicQueryChange {
-                query: self.primary_query(),
-                is_paste,
-            };
-            helix_event::send_blocking(handler, event);
-        }
+        self.refresh_dynamic_query(is_paste);
+    }
+
+    /// Re-run a dynamic query against the panel's current inputs. Called after the
+    /// query line changes and after a panel field or switch changes.
+    fn refresh_dynamic_query(&self, is_paste: bool) {
+        let Some(handler) = &self.dynamic_query_handler else {
+            return;
+        };
+
+        let event = DynamicQueryChange {
+            input: self.panel_input(),
+            is_paste,
+        };
+        helix_event::send_blocking(handler, event);
     }
 
     /// Get (cached) preview for the currently selected item. If a document corresponding
@@ -718,19 +879,50 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             snapshot.item_count(),
         );
 
+        // A switch is two states a glance must tell apart, so the contrast is not
+        // borrowed from a theme key: `ui.menu.selected` is a near-white grey in a
+        // light theme, which reads the same as off. Reversed always reads.
+        let toggle_on_style = text_style.add_modifier(Modifier::REVERSED);
+        let toggle_off_style = text_style.add_modifier(Modifier::DIM);
+
+        // The switches sit between the query and the match count, at the right end.
+        let mut suffix: Vec<(&str, Style)> = self
+            .panel_toggles
+            .iter()
+            .map(|toggle| {
+                let style = if toggle.on {
+                    toggle_on_style
+                } else {
+                    toggle_off_style
+                };
+
+                (toggle.label, style)
+            })
+            .collect();
+
+        suffix.push((count.as_str(), text_style));
+
         let area = inner.clip_left(1).with_height(1);
-        let line_area = area.clip_right(count.len() as u16 + 1);
+        let suffix_width = suffix_width(&suffix);
+        let line_area = area.clip_right(suffix_width);
 
         // render the prompt first since it will clear its background
         self.prompt.render(line_area, surface, cx);
 
-        surface.set_stringn(
-            (area.x + area.width).saturating_sub(count.len() as u16 + 1),
-            area.y,
-            &count,
-            (count.len()).min(area.width as usize),
-            text_style,
-        );
+        let mut x = area.right().saturating_sub(suffix_width);
+        self.toggle_positions.clear();
+
+        for (index, (text, style)) in suffix.iter().enumerate() {
+            surface.set_stringn(x, area.y, text, text.len(), *style);
+
+            // The last item is the match count, not a switch.
+            if index < self.panel_toggles.len() {
+                self.toggle_positions
+                    .push(Position::new(area.y as usize, x as usize));
+            }
+
+            x += text.chars().count() as u16 + 2;
+        }
 
         // -- Separator
         let sep_style = cx.editor.theme.get("ui.background.separator");
@@ -1086,7 +1278,30 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
             EventResult::Consumed(Some(callback))
         };
 
+        // A panel's switches are flipped with Alt + their own key, whichever line the
+        // cursor is on.
+        if let Some(index) = self.panel_toggle_at(key_event) {
+            self.panel_toggles[index].on = !self.panel_toggles[index].on;
+            self.refresh_dynamic_query(true);
+            return EventResult::Consumed(None);
+        }
+
+        // Tab walks the switches when the picker has any; without them it keeps
+        // stepping through the results, as it always did.
+        let has_toggles = !self.panel_toggles.is_empty();
+
         match key_event {
+            shift!(Tab) if has_toggles => {
+                self.focus_by(Direction::Backward);
+            }
+            key!(Tab) if has_toggles => {
+                self.focus_by(Direction::Forward);
+            }
+            key!(' ') if self.focused_toggle().is_some() => {
+                let index = self.focused_toggle().expect("just checked");
+                self.panel_toggles[index].on = !self.panel_toggles[index].on;
+                self.refresh_dynamic_query(true);
+            }
             shift!(Tab) | key!(Up) | ctrl!('p') => {
                 self.move_by(1, Direction::Backward);
             }
@@ -1161,7 +1376,23 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
             ctrl!('t') => {
                 self.toggle_preview();
             }
+            alt!('a') if self.panel_action.is_some() => {
+                let action = self.panel_action.as_ref().unwrap();
+                let input = self.panel_input();
+                let snapshot = self.matcher.snapshot();
+                let results: Vec<&I> = (0..snapshot.matched_item_count())
+                    .filter_map(|index| snapshot.get_matched_item(index))
+                    .map(|item| item.data)
+                    .collect();
+
+                action(ctx, &input, &results);
+
+                // The action has changed the files under the results, so what is on
+                // screen is now a list of matches that are no longer there.
+                self.refresh_dynamic_query(true);
+            }
             _ => {
+                self.focus = 0;
                 self.prompt_handle_event(event, ctx);
             }
         }
@@ -1183,6 +1414,13 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
         } else {
             area.width
         };
+        // On a switch the ordinary block cursor sits on its label, so "where am I"
+        // is answered by the same thing everywhere.
+        if let Some(index) = self.focused_toggle() {
+            let position = self.toggle_positions.get(index).copied();
+            return (position, CursorKind::Block);
+        }
+
         let area = inner.clip_left(1).with_height(1).with_width(picker_width);
 
         self.prompt.cursor(area, editor)
@@ -1204,4 +1442,18 @@ impl<T: 'static + Send + Sync, D> Drop for Picker<T, D> {
     }
 }
 
+/// Width of a rendered input-line suffix: the items themselves, two spaces between
+/// them and one at the right edge.
+fn suffix_width(suffix: &[(&str, Style)]) -> u16 {
+    if suffix.is_empty() {
+        return 0;
+    }
+
+    let text: usize = suffix.iter().map(|(text, _)| text.chars().count()).sum();
+
+    text as u16 + 2 * (suffix.len() as u16 - 1) + 1
+}
+
 type PickerCallback<T> = Box<dyn Fn(&mut Context, &T, Action)>;
+
+type PanelCallback<T> = Box<dyn Fn(&mut Context, &PanelInput, &[&T])>;

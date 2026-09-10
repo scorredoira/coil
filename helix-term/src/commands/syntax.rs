@@ -28,7 +28,7 @@ use crate::{
     filter_picker_entry,
     ui::{
         overlay::overlaid,
-        picker::{Injector, PathOrId},
+        picker::{Injector, PanelInput, PathOrId},
         Picker, PickerColumn,
     },
 };
@@ -300,10 +300,11 @@ pub fn syntax_workspace_symbol_picker(cx: &mut Context) {
         }),
     ];
 
-    let get_tags = |query: &str,
+    let get_tags = |input: &PanelInput,
                     editor: &mut Editor,
                     state: Arc<SearchState>,
                     injector: &Injector<_, _>| {
+        let query = input.query();
         if query.len() < 3 {
             return async { Ok(()) }.boxed();
         }

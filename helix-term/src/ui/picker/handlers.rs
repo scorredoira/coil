@@ -9,7 +9,7 @@ use tokio::time::Instant;
 
 use crate::{job, ui::overlay::Overlay};
 
-use super::{CachedPreview, DynQueryCallback, Picker};
+use super::{CachedPreview, DynQueryCallback, PanelInput, Picker};
 
 pub(super) struct PreviewHighlightHandler<T: 'static + Send + Sync, D: 'static + Send + Sync> {
     trigger: Option<Arc<Path>>,
@@ -113,7 +113,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> AsyncHook
 }
 
 pub(super) struct DynamicQueryChange {
-    pub query: Arc<str>,
+    pub input: PanelInput,
     pub is_paste: bool,
 }
 
@@ -123,8 +123,8 @@ pub(super) struct DynamicQueryHandler<T: 'static + Send + Sync, D: 'static + Sen
     // Defaults to 100ms if not provided via `Picker::with_dynamic_query`. Callers may want to set
     // this higher if the dynamic query is expensive - for example global search.
     debounce: Duration,
-    last_query: Arc<str>,
-    query: Option<Arc<str>>,
+    last_input: PanelInput,
+    input: Option<PanelInput>,
 }
 
 impl<T: 'static + Send + Sync, D: 'static + Send + Sync> DynamicQueryHandler<T, D> {
@@ -132,8 +132,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> DynamicQueryHandler<T, 
         Self {
             callback: Arc::new(callback),
             debounce: Duration::from_millis(duration_ms.unwrap_or(100)),
-            last_query: "".into(),
-            query: None,
+            last_input: PanelInput::default(),
+            input: None,
         }
     }
 }
@@ -142,14 +142,14 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> AsyncHook for DynamicQu
     type Event = DynamicQueryChange;
 
     fn handle_event(&mut self, change: Self::Event, _timeout: Option<Instant>) -> Option<Instant> {
-        let DynamicQueryChange { query, is_paste } = change;
-        if query == self.last_query {
-            // If the search query reverts to the last one we requested, no need to
+        let DynamicQueryChange { input, is_paste } = change;
+        if input == self.last_input {
+            // If the inputs revert to the last ones we requested, no need to
             // make a new request.
-            self.query = None;
+            self.input = None;
             None
         } else {
-            self.query = Some(query);
+            self.input = Some(input);
             if is_paste {
                 self.finish_debounce();
                 None
@@ -160,10 +160,10 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> AsyncHook for DynamicQu
     }
 
     fn finish_debounce(&mut self) {
-        let Some(query) = self.query.take() else {
+        let Some(input) = self.input.take() else {
             return;
         };
-        self.last_query = query.clone();
+        self.last_input = input.clone();
         let callback = self.callback.clone();
 
         job::dispatch_blocking(move |editor, compositor| {
@@ -177,7 +177,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> AsyncHook for DynamicQu
             picker.version.fetch_add(1, atomic::Ordering::Relaxed);
             picker.matcher.restart(false);
             let injector = picker.injector();
-            let get_options = (callback)(&query, editor, picker.editor_data.clone(), &injector);
+            let get_options = (callback)(&input, editor, picker.editor_data.clone(), &injector);
             tokio::spawn(async move {
                 if let Err(err) = get_options.await {
                     log::info!("Dynamic request failed: {err}");

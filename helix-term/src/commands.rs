@@ -66,7 +66,12 @@ use crate::{
     compositor::{self, Component, Compositor},
     filter_picker_entry,
     job::Callback,
-    ui::{self, overlay::overlaid, Picker, PickerColumn, Popup, Prompt, PromptEvent},
+    ui::{
+        self,
+        overlay::overlaid,
+        picker::{PanelInput, PanelToggle},
+        Picker, PickerColumn, Popup, Prompt, PromptEvent,
+    },
 };
 
 use crate::job::{self, Jobs};
@@ -90,8 +95,10 @@ use helix_stdx::Url;
 use once_cell::sync::Lazy;
 use serde::de::{self, Deserialize, Deserializer};
 
+use grep_matcher::{Captures, Matcher};
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::{sinks, BinaryDetection, SearcherBuilder};
+use ignore::overrides::{Override, OverrideBuilder};
 use ignore::{DirEntry, WalkBuilder, WalkState};
 
 pub type OnKeyCallback = Box<dyn FnOnce(&mut Context, KeyEvent)>;
@@ -2601,12 +2608,16 @@ fn global_search(cx: &mut Context) {
                 .stylize(Some(&item.path), Some(item.line_start))
         }),
         PickerColumn::hidden("contents"),
+        PickerColumn::hidden(REPLACE),
+        PickerColumn::hidden(INCLUDE),
+        PickerColumn::hidden(EXCLUDE),
     ];
 
-    let get_files = |query: &str,
+    let get_files = |input: &PanelInput,
                      editor: &mut Editor,
                      config: std::sync::Arc<GlobalSearchConfig>,
                      injector: &ui::picker::Injector<_, _>| {
+        let query = input.query();
         if query.is_empty() {
             return async { Ok(()) }.boxed();
         }
@@ -2622,8 +2633,12 @@ fn global_search(cx: &mut Context) {
             .map(|doc| (doc.path().map(ToOwned::to_owned), doc.text().to_owned()))
             .collect();
 
+        let match_case = input.toggle(MATCH_CASE);
         let matcher = match RegexMatcherBuilder::new()
-            .case_smart(config.smart_case)
+            .case_smart(!match_case && config.smart_case)
+            .case_insensitive(!match_case && !config.smart_case)
+            .word(input.toggle(WHOLE_WORD))
+            .fixed_strings(!input.toggle(REGEX))
             .multi_line(true)
             .build(query)
         {
@@ -2637,6 +2652,19 @@ fn global_search(cx: &mut Context) {
                 return async { Err(anyhow::anyhow!("Failed to compile regex")) }.boxed();
             }
         };
+
+        let overrides =
+            match build_overrides(&search_root, input.field(INCLUDE), input.field(EXCLUDE)) {
+                Ok(overrides) => {
+                    editor.clear_status();
+                    overrides
+                }
+                Err(err) => {
+                    log::info!("Failed to build the global search file filter: {err}");
+                    return async { Err(anyhow::anyhow!("Failed to build the file filter")) }
+                        .boxed();
+                }
+            };
 
         let dedup_symlinks = config.file_picker_config.deduplicate_links;
         let absolute_root = search_root
@@ -2663,6 +2691,7 @@ fn global_search(cx: &mut Context) {
                 })
                 .add_custom_ignore_filename(helix_loader::config_dir().join("ignore"))
                 .add_custom_ignore_filename(".helix/ignore")
+                .overrides(overrides)
                 .build_parallel()
                 .run(|| {
                     let mut searcher = searcher.clone();
@@ -2784,9 +2813,439 @@ fn global_search(cx: &mut Context) {
          }| { Some((path.as_ref().into(), Some((*line_start, *line_end)))) },
     )
     .with_history_register(Some(reg))
+    .with_toggles(vec![
+        PanelToggle::new(MATCH_CASE, "Aa", 'c', false),
+        PanelToggle::new(WHOLE_WORD, "ab", 'w', false),
+        // Regex is on, as global search has always been.
+        PanelToggle::new(REGEX, ".*", 'r', true),
+        PanelToggle::new(PRESERVE_CASE, "AB", 'p', false),
+    ])
+    .with_panel_action(|cx, input, results| {
+        let paths: Vec<PathBuf> = results
+            .iter()
+            .map(|result| result.path.to_path_buf())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        match replace_in_files(cx.editor, input, paths) {
+            Ok(outcome) => cx.editor.set_status(format!(
+                "Replaced {} matches in {} files. The buffers are not written yet: :wa",
+                outcome.matches, outcome.files,
+            )),
+            Err(err) => cx.editor.set_error(format!("Replace failed: {err}")),
+        }
+    })
     .with_dynamic_query(get_files, Some(275));
 
     cx.push_layer(Box::new(overlaid(picker)));
+}
+
+/// The names the search panel gives its own fields and switches.
+const REPLACE: &str = "replace";
+const INCLUDE: &str = "include";
+const EXCLUDE: &str = "exclude";
+const MATCH_CASE: &str = "match-case";
+const WHOLE_WORD: &str = "whole-word";
+const REGEX: &str = "regex";
+const PRESERVE_CASE: &str = "preserve-case";
+
+struct ReplaceOutcome {
+    files: usize,
+    matches: usize,
+}
+
+/// Turns the panel's include/exclude lines into the walker's filter. Both take a
+/// comma separated list of globs; excluding is including the negation.
+fn build_overrides(root: &Path, include: &str, exclude: &str) -> anyhow::Result<Override> {
+    let mut builder = OverrideBuilder::new(root);
+
+    for glob in include.split(',').filter(|glob| !glob.trim().is_empty()) {
+        builder.add(&normalize_glob(glob))?;
+    }
+
+    for glob in exclude.split(',').filter(|glob| !glob.trim().is_empty()) {
+        builder.add(&format!("!{}", normalize_glob(glob)))?;
+    }
+
+    Ok(builder.build()?)
+}
+
+/// A glob typed into the panel is meant the way a person says it: `src/` and `src`
+/// mean everything under that directory, while anything with a wildcard or an
+/// extension is already a pattern and is left alone.
+fn normalize_glob(glob: &str) -> String {
+    let glob = glob.trim();
+
+    if let Some(directory) = glob.strip_suffix('/') {
+        return format!("{directory}/**");
+    }
+
+    if !glob.contains('*') && !glob.contains('.') {
+        return format!("{glob}/**");
+    }
+
+    glob.to_string()
+}
+
+/// How the words of a piece of identifier-like text are joined and capitalised.
+struct CaseStyle {
+    separator: &'static str,
+    words: WordCase,
+    /// Whether the match was more than one word. A single word has no internal
+    /// shape to copy, so the replacement is recased whole rather than split.
+    multiword: bool,
+}
+
+#[derive(PartialEq, Clone, Copy)]
+enum WordCase {
+    /// `pulldb`, `pull_db`, `pull-db`
+    Lower,
+    /// `PULLDB`, `PULL_DB`
+    Upper,
+    /// `Pulldb`, `Pull_Db`, `PullDb`
+    Title,
+    /// `pullDb` — the first word lower, the rest titled
+    Camel,
+    /// `Pull_db` — the first word titled, the rest lower
+    Sentence,
+}
+
+#[derive(PartialEq, Clone, Copy)]
+enum WordShape {
+    Lower,
+    Upper,
+    Title,
+    /// Mixed in a way that names no shape, so nothing can be copied from it.
+    Mixed,
+    /// Digits and symbols only: no case to read off it.
+    Caseless,
+}
+
+/// Reshapes `replacement` to the case of the text it stands in for, so one
+/// replacement typed once follows every spelling of the thing it replaces:
+/// `pulldb` -> `pushdb`, `PULL_DB` -> `PUSH_DB`, `pullDb` -> `pushDb`. Text whose
+/// shape has no name — mixed case, no letters at all — leaves the replacement
+/// exactly as it was typed, since there is nothing to copy.
+fn preserve_case(matched: &str, replacement: &str) -> String {
+    let Some(style) = read_case_style(matched) else {
+        return replacement.to_string();
+    };
+
+    let words = if style.multiword {
+        split_words(replacement)
+    } else {
+        vec![replacement.to_string()]
+    };
+
+    if words.is_empty() {
+        return replacement.to_string();
+    }
+
+    let cased: Vec<String> = words
+        .iter()
+        .enumerate()
+        .map(|(index, word)| match style.words {
+            WordCase::Lower => word.to_lowercase(),
+            WordCase::Upper => word.to_uppercase(),
+            WordCase::Title => title_case(word),
+            WordCase::Camel if index == 0 => word.to_lowercase(),
+            WordCase::Camel => title_case(word),
+            WordCase::Sentence if index == 0 => title_case(word),
+            WordCase::Sentence => word.to_lowercase(),
+        })
+        .collect();
+
+    cased.join(style.separator)
+}
+
+fn read_case_style(matched: &str) -> Option<CaseStyle> {
+    let shapes: Vec<WordShape> = split_words(matched)
+        .iter()
+        .map(|word| read_word_shape(word))
+        .filter(|shape| *shape != WordShape::Caseless)
+        .collect();
+
+    let first = *shapes.first()?;
+    let rest = &shapes[1..];
+
+    let words = if shapes.iter().all(|shape| *shape == WordShape::Lower) {
+        WordCase::Lower
+    } else if shapes.iter().all(|shape| *shape == WordShape::Upper) {
+        WordCase::Upper
+    } else if shapes.iter().all(|shape| *shape == WordShape::Title) {
+        WordCase::Title
+    } else if first == WordShape::Lower && rest.iter().all(|s| *s == WordShape::Title) {
+        WordCase::Camel
+    } else if first == WordShape::Title && rest.iter().all(|s| *s == WordShape::Lower) {
+        WordCase::Sentence
+    } else {
+        return None;
+    };
+
+    let separator = match matched.chars().find(|c| matches!(c, '_' | '-' | ' ')) {
+        Some('_') => "_",
+        Some('-') => "-",
+        Some(' ') => " ",
+        _ => "",
+    };
+
+    Some(CaseStyle {
+        separator,
+        words,
+        multiword: shapes.len() > 1,
+    })
+}
+
+fn read_word_shape(word: &str) -> WordShape {
+    let letters: Vec<char> = word.chars().filter(|c| c.is_alphabetic()).collect();
+    let Some(first) = letters.first().copied() else {
+        return WordShape::Caseless;
+    };
+
+    if letters.iter().all(|c| c.is_lowercase()) {
+        return WordShape::Lower;
+    }
+
+    if letters.iter().all(|c| c.is_uppercase()) {
+        // A single capital is a title, not a shout: `A` -> `Bar`, but `AB` -> `BAR`.
+        return if letters.len() == 1 {
+            WordShape::Title
+        } else {
+            WordShape::Upper
+        };
+    }
+
+    if first.is_uppercase() && letters[1..].iter().all(|c| c.is_lowercase()) {
+        return WordShape::Title;
+    }
+
+    WordShape::Mixed
+}
+
+/// Breaks identifier-like text into its words, at separators and at humps, so
+/// `pullDbInto`, `pull_db_into` and `pull-db-into` all read as the same three.
+fn split_words(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut words = Vec::new();
+    let mut word = String::new();
+
+    for (index, ch) in chars.iter().copied().enumerate() {
+        if matches!(ch, '_' | '-' | ' ') {
+            if !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+            }
+
+            continue;
+        }
+
+        let previous = index.checked_sub(1).and_then(|i| chars.get(i)).copied();
+        let next = chars.get(index + 1).copied();
+
+        // A hump starts a word after a lowercase letter (`pullDb`) and at the last
+        // capital of a run that runs into a lowercase one (`HTTPServer`).
+        let starts_word = ch.is_uppercase()
+            && (previous.is_some_and(char::is_lowercase)
+                || (previous.is_some_and(char::is_uppercase)
+                    && next.is_some_and(char::is_lowercase)));
+
+        if starts_word && !word.is_empty() {
+            words.push(std::mem::take(&mut word));
+        }
+
+        word.push(ch);
+    }
+
+    if !word.is_empty() {
+        words.push(word);
+    }
+
+    words
+}
+
+fn title_case(word: &str) -> String {
+    let mut chars = word.chars();
+    let Some(head) = chars.next() else {
+        return String::new();
+    };
+
+    head.to_uppercase().collect::<String>() + chars.as_str().to_lowercase().as_str()
+}
+
+/// Replaces every match of the panel's query in the given files. The buffers are
+/// left modified and unwritten, exactly like an LSP rename, so the whole thing is
+/// one undo away and nothing touches the disk until the user says so.
+fn replace_in_files(
+    editor: &mut Editor,
+    input: &PanelInput,
+    paths: Vec<PathBuf>,
+) -> anyhow::Result<ReplaceOutcome> {
+    let query = input.query();
+    ensure!(!query.is_empty(), "there is nothing to search for");
+
+    let config = editor.config();
+    let match_case = input.toggle(MATCH_CASE);
+    let is_regex = input.toggle(REGEX);
+    let keep_case = input.toggle(PRESERVE_CASE);
+    let replacement = input.field(REPLACE).to_string();
+
+    let matcher = RegexMatcherBuilder::new()
+        .case_smart(!match_case && config.search.smart_case)
+        .case_insensitive(!match_case && !config.search.smart_case)
+        .word(input.toggle(WHOLE_WORD))
+        .fixed_strings(!is_regex)
+        .multi_line(true)
+        .build(query)?;
+
+    let mut edits: Vec<(DocumentId, Transaction, usize)> = Vec::new();
+
+    for path in paths {
+        let doc_id = editor.open(&path, Action::Load)?;
+        let doc = doc_mut!(editor, &doc_id);
+        let text = doc.text().clone();
+        let haystack = text.to_string();
+
+        let mut changes = Vec::new();
+        let mut caps = matcher.new_captures()?;
+
+        matcher.captures_iter(haystack.as_bytes(), &mut caps, |caps| {
+            let whole = caps.get(0).expect("group 0 is the match itself");
+            let matched = &haystack[whole.start()..whole.end()];
+
+            let mut expanded = Vec::new();
+            if is_regex {
+                caps.interpolate(
+                    |name| matcher.capture_index(name),
+                    haystack.as_bytes(),
+                    replacement.as_bytes(),
+                    &mut expanded,
+                );
+            } else {
+                expanded.extend_from_slice(replacement.as_bytes());
+            }
+
+            // The replacement is built from the pattern and the file, both of which
+            // are text, so it cannot come back as anything but text.
+            let expanded = String::from_utf8(expanded).expect("a replacement is text");
+            let expanded = if keep_case {
+                preserve_case(matched, &expanded)
+            } else {
+                expanded
+            };
+
+            changes.push((
+                text.byte_to_char(whole.start()),
+                text.byte_to_char(whole.end()),
+                Some(expanded.into()),
+            ));
+
+            true
+        })?;
+
+        if changes.is_empty() {
+            continue;
+        }
+
+        let matches = changes.len();
+        edits.push((
+            doc_id,
+            Transaction::change(&text, changes.into_iter()),
+            matches,
+        ));
+    }
+
+    let mut outcome = ReplaceOutcome {
+        files: edits.len(),
+        matches: 0,
+    };
+
+    for (doc_id, transaction, matches) in edits {
+        let view_id = editor.get_synced_view_id(doc_id);
+        let doc = doc_mut!(editor, &doc_id);
+        doc.apply(&transaction, view_id);
+
+        let view = view_mut!(editor, view_id);
+        doc.append_changes_to_history(view);
+
+        outcome.matches += matches;
+    }
+
+    Ok(outcome)
+}
+
+#[cfg(test)]
+mod search_panel_test {
+    use super::{normalize_glob, preserve_case};
+
+    #[test]
+    fn preserve_case_copies_the_shape_of_the_match() {
+        assert_eq!(preserve_case("pulldb", "pushdb"), "pushdb");
+        assert_eq!(preserve_case("Pulldb", "pushdb"), "Pushdb");
+        assert_eq!(preserve_case("PULLDB", "pushdb"), "PUSHDB");
+
+        // The replacement's own case is overwritten, not merged with the match's.
+        assert_eq!(preserve_case("pulldb", "PushDb"), "pushdb");
+        assert_eq!(preserve_case("PULLDB", "pushdb"), "PUSHDB");
+        assert_eq!(preserve_case("Pulldb", "pUSHdb"), "Pushdb");
+    }
+
+    #[test]
+    fn preserve_case_leaves_a_shape_it_cannot_name_alone() {
+        // Mixed case is not one of the three shapes, so the replacement stands.
+        assert_eq!(preserve_case("pullDb", "pushDb"), "pushDb");
+        assert_eq!(preserve_case("PullDB", "push_db"), "push_db");
+
+        // Neither is text with no letters to read a case off.
+        assert_eq!(preserve_case("1234", "pushDb"), "pushDb");
+        assert_eq!(preserve_case("", "pushDb"), "pushDb");
+    }
+
+    #[test]
+    fn preserve_case_reads_a_lone_capital_as_a_title() {
+        assert_eq!(preserve_case("A", "bar"), "Bar");
+        assert_eq!(preserve_case("AB", "bar"), "BAR");
+    }
+
+    #[test]
+    fn preserve_case_ignores_what_is_not_a_letter() {
+        assert_eq!(preserve_case("pull_db", "push_db"), "push_db");
+        assert_eq!(preserve_case("PULL_DB", "push_db"), "PUSH_DB");
+        assert_eq!(preserve_case("Pull_db", "push_db"), "Push_db");
+    }
+
+    #[test]
+    fn preserve_case_carries_the_word_style_across_spellings() {
+        // One replacement typed once, stamped with the shape of each match.
+        assert_eq!(preserve_case("pullDb", "push_db"), "pushDb");
+        assert_eq!(preserve_case("pull_db", "pushDb"), "push_db");
+        assert_eq!(preserve_case("pull-db", "pushDb"), "push-db");
+        assert_eq!(preserve_case("PULL_DB", "pushDb"), "PUSH_DB");
+        assert_eq!(preserve_case("PullDb", "push_db"), "PushDb");
+        assert_eq!(preserve_case("Pull_Db", "pushDb"), "Push_Db");
+        assert_eq!(preserve_case("pull db", "pushDb"), "push db");
+    }
+
+    #[test]
+    fn preserve_case_splits_a_run_of_capitals_at_the_last_one() {
+        // `HTTPServer` is HTTP + Server, so the shape is mixed and nothing is copied.
+        assert_eq!(preserve_case("HTTPServer", "tcp_client"), "tcp_client");
+
+        // But a clean camel match still carries.
+        assert_eq!(preserve_case("httpServer", "tcp_client"), "tcpClient");
+    }
+
+    #[test]
+    fn a_bare_name_is_a_directory_and_a_pattern_is_left_alone() {
+        assert_eq!(normalize_glob("cmd"), "cmd/**");
+        assert_eq!(normalize_glob("cmd/"), "cmd/**");
+        assert_eq!(normalize_glob("cmd/scl"), "cmd/scl/**");
+        assert_eq!(normalize_glob(" cmd "), "cmd/**");
+
+        assert_eq!(normalize_glob("*.rs"), "*.rs");
+        assert_eq!(normalize_glob("docs/*.md"), "docs/*.md");
+        assert_eq!(normalize_glob("Cargo.toml"), "Cargo.toml");
+        assert_eq!(normalize_glob("**/tests/**"), "**/tests/**");
+    }
 }
 
 enum Extend {
