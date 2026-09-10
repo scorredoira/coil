@@ -153,13 +153,18 @@ pub fn trigger_auto_completion(editor: &Editor, trigger_char_only: bool) {
         return;
     }
 
+    // An empty prefix (the start of the file) is not a word: `all` on nothing is vacuously
+    // true, so the count is checked too.
+    let trigger_len = config.completion_trigger_len as usize;
     let is_auto_trigger = !trigger_char_only
         && doc
             .text()
             .chars_at(cursor)
             .reversed()
-            .take(config.completion_trigger_len as usize)
-            .all(char_is_word);
+            .take(trigger_len)
+            .filter(|ch| char_is_word(*ch))
+            .count()
+            == trigger_len;
 
     if is_auto_trigger {
         handler.event(CompletionEvent::AutoTrigger {
@@ -255,7 +260,9 @@ pub(super) fn register_hooks(_handlers: &Handlers) {
                 .event(CompletionEvent::Cancel);
             clear_completions(event.cx);
         } else if event.new_mode == Mode::Insert {
-            trigger_auto_completion(event.cx.editor, false)
+            // Entering insert mode is not typing: only a trigger character (a `.`) earns a
+            // popup here, never the word the cursor happens to sit after.
+            trigger_auto_completion(event.cx.editor, true)
         }
         Ok(())
     });
