@@ -328,10 +328,9 @@ fn build_theme_values(
     let palette = values
         .remove("palette")
         .map(|value| {
-            ThemePalette::try_from(value).unwrap_or_else(|err| {
-                warnings.push(err);
-                ThemePalette::default()
-            })
+            let (palette, palette_warnings) = ThemePalette::from_toml(value);
+            warnings.extend(palette_warnings);
+            palette
         })
         .unwrap_or_default();
     // remove inherits from value to prevent errors
@@ -647,23 +646,31 @@ impl ThemePalette {
     }
 }
 
-impl TryFrom<Value> for ThemePalette {
-    type Error = String;
-
-    fn try_from(value: Value) -> Result<Self, Self::Error> {
-        let map = match value {
-            Value::Table(entries) => entries,
-            _ => return Ok(Self::default()),
+impl ThemePalette {
+    /// Reads a theme's `[palette]`, keeping every colour it can and reporting the
+    /// ones it cannot. A single unreadable entry must not cost the whole palette:
+    /// every other key would then fail to resolve its colour by name and the theme
+    /// would render as no theme at all.
+    fn from_toml(value: Value) -> (Self, Vec<String>) {
+        let Value::Table(map) = value else {
+            return (Self::default(), Vec::new());
         };
 
         let mut palette = HashMap::with_capacity(map.len());
+        let mut warnings = Vec::new();
+
         for (name, value) in map {
-            let value = Self::parse_value_as_str(&value)?;
-            let color = Self::string_to_rgb(value)?;
-            palette.insert(name, color);
+            let color = Self::parse_value_as_str(&value).and_then(Self::string_to_rgb);
+
+            match color {
+                Ok(color) => {
+                    palette.insert(name, color);
+                }
+                Err(err) => warnings.push(err),
+            }
         }
 
-        Ok(Self::new(palette))
+        (Self::new(palette), warnings)
     }
 }
 
@@ -680,6 +687,28 @@ mod tests {
         palette.parse_style(&mut style, fg).unwrap();
 
         assert_eq!(style, Style::default().fg(Color::Rgb(255, 255, 255)));
+    }
+
+    #[test]
+    fn a_bad_palette_entry_costs_only_itself() {
+        // Before, one unreadable entry took the whole palette with it and every key
+        // below resolved to nothing.
+        let palette = toml::toml! {
+            "accent.fg" = "#0969da"
+            "accent.muted" = "#nothex"
+            "fg.default" = "#1f2328"
+        };
+
+        let (palette, warnings) = ThemePalette::from_toml(Value::Table(palette));
+
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("#nothex"), "{}", warnings[0]);
+
+        let style = toml::Value::String("accent.fg".into());
+        assert_eq!(palette.parse_color(style), Ok(Color::Rgb(9, 105, 218)));
+
+        let style = toml::Value::String("fg.default".into());
+        assert_eq!(palette.parse_color(style), Ok(Color::Rgb(31, 35, 40)));
     }
 
     #[test]
