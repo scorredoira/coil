@@ -337,6 +337,10 @@ impl Color {
     ///
     /// let color3 = Color::from_hex("#012").unwrap();
     /// assert_eq!(color3, Color::Rgb(0, 17, 34));
+    ///
+    /// // An alpha pair is accepted and dropped: a terminal cell has no alpha.
+    /// let color4 = Color::from_hex("#54aeff66").unwrap();
+    /// assert_eq!(color4, Color::Rgb(84, 174, 255));
     /// ```
     pub fn from_hex(h: &str) -> Result<Self, MalformedHex> {
         let h = h.as_bytes();
@@ -348,7 +352,10 @@ impl Color {
         use dupe_from_nibble as nibble;
 
         match h.len() {
-            7 => match (|| {
+            // 9 is RGBA. A terminal cell has no alpha, so the fourth pair is read
+            // and dropped, which is what a theme writing `#54aeff66` for a muted
+            // colour means by it.
+            7 | 9 => match (|| {
                 Some(Self::Rgb(
                     pair([h[1], h[2]])?,
                     pair([h[3], h[4]])?,
@@ -910,7 +917,6 @@ mod tests {
             "#0000",
             "#00000",
             "#0000000",
-            "#00000000",
             "#000000000",
             "#0000000000",
         ] {
