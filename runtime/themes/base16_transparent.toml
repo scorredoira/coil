@@ -5,6 +5,7 @@
 "ui.background.separator" = { fg = "gray" }
 "ui.text" = { fg = "light-gray" }
 "ui.text.focus" = { fg = "white" }
+"ui.text.directory" = { fg = "blue" }
 "ui.menu" = { fg = "white" }
 "ui.menu.selected" = { modifiers = ["reversed"] }
 "ui.menu.scroll" = { fg = "light-gray" }
@@ -16,9 +17,9 @@
 "comment" = "light-gray"
 "ui.statusline" = { fg = "white" }
 "ui.statusline.inactive" = { fg = "gray" }
-"ui.statusline.normal" = { fg = "black", bg = "blue" }
-"ui.statusline.insert" = { fg = "black", bg = "green" }
-"ui.statusline.select" = { fg = "black", bg = "magenta" }
+"ui.statusline.normal" = { fg = "blue", modifiers = ["reversed"] }
+"ui.statusline.insert" = { fg = "green", modifiers = ["reversed"] }
+"ui.statusline.select" = { fg = "magenta", modifiers = ["reversed"] }
 "ui.help" = { fg = "light-gray" }
 "ui.cursor" = { modifiers = ["reversed"] }
 "ui.cursor.match" = { fg = "light-yellow", underline = { color = "light-yellow", style = "line" } }
