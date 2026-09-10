@@ -1752,10 +1752,17 @@ impl Component for EditorView {
 
 fn canonicalize_key(key: &mut KeyEvent) {
     if let KeyEvent {
-        code: KeyCode::Char(_),
-        modifiers: _,
+        code: KeyCode::Char(ch),
+        modifiers,
     } = key
     {
-        key.modifiers.remove(KeyModifiers::SHIFT)
+        // A kitty-protocol terminal may report Shift+e as `e` plus SHIFT rather than `E`.
+        if modifiers.contains(KeyModifiers::SHIFT) && ch.is_lowercase() {
+            let mut upper = ch.to_uppercase();
+            if let (Some(first), None) = (upper.next(), upper.next()) {
+                *ch = first;
+            }
+        }
+        modifiers.remove(KeyModifiers::SHIFT)
     }
 }
