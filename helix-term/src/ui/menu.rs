@@ -374,7 +374,7 @@ impl<T: Item + 'static> Component for Menu<T> {
                 offset: scroll,
                 selected: self.cursor,
             },
-            false,
+            &[],
         );
 
         let render_borders = cx.editor.menu_border();

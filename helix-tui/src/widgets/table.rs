@@ -361,12 +361,15 @@ impl TableState {
 impl Table<'_> {
     // type State = TableState;
 
+    /// `truncate_start` says, per column, which end to cut when a cell does not
+    /// fit: a path keeps its tail, a line of text keeps its head. A slice shorter
+    /// than the columns repeats its last value, and an empty one cuts the tail.
     pub fn render_table(
         mut self,
         area: Rect,
         buf: &mut Buffer,
         state: &mut TableState,
-        truncate: bool,
+        truncate_start: &[bool],
     ) {
         if area.area() == 0 {
             return;
@@ -404,7 +407,8 @@ impl Table<'_> {
             if has_selection {
                 col += (highlight_symbol.width() as u16).min(table_area.width);
             }
-            for (width, cell) in columns_widths.iter().zip(header.cells.iter()) {
+            for (index, (width, cell)) in columns_widths.iter().zip(header.cells.iter()).enumerate()
+            {
                 render_cell(
                     buf,
                     cell,
@@ -414,7 +418,7 @@ impl Table<'_> {
                         width: *width,
                         height: max_header_height,
                     },
-                    truncate,
+                    truncates_start(truncate_start, index),
                 );
                 col += *width + self.column_spacing;
             }
@@ -464,7 +468,11 @@ impl Table<'_> {
                 }
             }
             let mut col = table_row_start_col;
-            for (width, cell) in columns_widths.iter().zip(table_row.cells.iter()) {
+            for (index, (width, cell)) in columns_widths
+                .iter()
+                .zip(table_row.cells.iter())
+                .enumerate()
+            {
                 render_cell(
                     buf,
                     cell,
@@ -474,12 +482,18 @@ impl Table<'_> {
                         width: *width,
                         height: table_row.height,
                     },
-                    truncate,
+                    truncates_start(truncate_start, index),
                 );
                 col += *width + self.column_spacing;
             }
         }
     }
+}
+
+fn truncates_start(truncate_start: &[bool], column: usize) -> bool {
+    let index = column.min(truncate_start.len().saturating_sub(1));
+
+    truncate_start.get(index).copied().unwrap_or(false)
 }
 
 fn render_cell(buf: &mut Buffer, cell: &Cell, area: Rect, truncate: bool) {
@@ -499,7 +513,7 @@ fn render_cell(buf: &mut Buffer, cell: &Cell, area: Rect, truncate: bool) {
 impl Widget for Table<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let mut state = TableState::default();
-        Table::render_table(self, area, buf, &mut state, false);
+        Table::render_table(self, area, buf, &mut state, &[]);
     }
 }
 

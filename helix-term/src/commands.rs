@@ -96,7 +96,7 @@ use once_cell::sync::Lazy;
 use serde::de::{self, Deserialize, Deserializer};
 
 use grep_matcher::{Captures, Matcher};
-use grep_regex::RegexMatcherBuilder;
+use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 use grep_searcher::{sinks, BinaryDetection, SearcherBuilder};
 use ignore::overrides::{Override, OverrideBuilder};
 use ignore::{DirEntry, WalkBuilder, WalkState};
@@ -2576,14 +2576,29 @@ fn global_search(cx: &mut Context) {
         line_start: usize,
         /// 0 indexed line end
         line_end: usize,
+        /// The text that matched, trimmed, for the row to show.
+        line: String,
+        /// Where the pattern hit inside `line`, as byte ranges, so the row can
+        /// weight those and only those.
+        hits: Vec<(usize, usize)>,
     }
 
     impl FileResult<'_> {
-        fn new(path: &Path, line_start: usize, line_end: usize) -> Self {
+        fn new(
+            path: &Path,
+            line_start: usize,
+            line_end: usize,
+            matched: &str,
+            matcher: &RegexMatcher,
+        ) -> Self {
+            let (line, hits) = summarize_match(matched, matcher);
+
             Self {
                 path: helix_stdx::path::get_relative_path(path.to_path_buf()),
                 line_start,
                 line_end,
+                line,
+                hits,
             }
         }
     }
@@ -2607,6 +2622,26 @@ fn global_search(cx: &mut Context) {
                 .style
                 .stylize(Some(&item.path), Some(item.line_start))
         }),
+        PickerColumn::new("line", |item: &FileResult, _config: &GlobalSearchConfig| {
+            let mut spans = Vec::new();
+            let mut at = 0;
+
+            for (start, end) in &item.hits {
+                if *start > at {
+                    spans.push(Span::raw(&item.line[at..*start]));
+                }
+
+                let bold = Style::default().add_modifier(helix_view::graphics::Modifier::BOLD);
+                spans.push(Span::styled(&item.line[*start..*end], bold));
+                at = *end;
+            }
+
+            spans.push(Span::raw(&item.line[at..]));
+
+            Cell::from(Spans::from(spans))
+        })
+        .without_filtering()
+        .keeping_start(),
         PickerColumn::hidden("contents"),
         PickerColumn::hidden(REPLACE),
         PickerColumn::hidden(INCLUDE),
@@ -2712,9 +2747,14 @@ fn global_search(cx: &mut Context) {
                         let sink = sinks::UTF8(|line_start, line_content| {
                             let line_start = line_start as usize - 1;
                             let line_end = line_start + line_content.lines().count() - 1;
-                            stop = injector
-                                .push(FileResult::new(entry.path(), line_start, line_end))
-                                .is_err();
+                            let result = FileResult::new(
+                                entry.path(),
+                                line_start,
+                                line_end,
+                                line_content,
+                                &matcher,
+                            );
+                            stop = injector.push(result).is_err();
 
                             Ok(!stop)
                         });
@@ -2839,6 +2879,78 @@ fn global_search(cx: &mut Context) {
     .with_dynamic_query(get_files, Some(275));
 
     cx.push_layer(Box::new(overlaid(picker)));
+}
+
+/// How much of a matching line is worth carrying. A minified bundle is one line of
+/// a hundred thousand characters, and there is one of these per match.
+const MAX_LINE: usize = 300;
+
+/// How much of the line to keep in front of the first hit. A row is narrow, so a
+/// match sitting at column 200 has to be brought left or nobody ever sees it.
+const LEAD: usize = 24;
+
+/// Steps back to the nearest character boundary at or below `at`.
+fn floor_boundary(text: &str, at: usize) -> usize {
+    let mut at = at.min(text.len());
+    while at > 0 && !text.is_char_boundary(at) {
+        at -= 1;
+    }
+
+    at
+}
+
+/// The piece of the matching line a row shows, plus the byte ranges the pattern hit
+/// inside that piece. Leading indentation goes — a row is read at its left edge —
+/// and a hit far along a long line drags the window with it.
+fn summarize_match(matched: &str, matcher: &RegexMatcher) -> (String, Vec<(usize, usize)>) {
+    let mut hits = Vec::new();
+    let found = matcher.find_iter(matched.as_bytes(), |m| {
+        hits.push((m.start(), m.end()));
+        true
+    });
+
+    if let Err(err) = found {
+        log::error!("Global search could not re-read its own match: {err}");
+    }
+
+    // A match spanning several lines shows its first one.
+    let head = matched.split('\n').next().unwrap_or(matched);
+    let line = head.trim_start();
+    let indent = head.len() - line.len();
+
+    let mut hits: Vec<(usize, usize)> = hits
+        .into_iter()
+        .filter_map(|(start, stop)| {
+            let start = start.checked_sub(indent)?;
+            let stop = stop.checked_sub(indent)?;
+
+            if start > line.len() {
+                return None;
+            }
+
+            Some((start, stop.min(line.len())))
+        })
+        .collect();
+
+    let first = hits.first().map(|(start, _)| *start).unwrap_or_default();
+    let from = if first > LEAD {
+        floor_boundary(line, first - LEAD)
+    } else {
+        0
+    };
+    let to = floor_boundary(line, from + MAX_LINE);
+
+    // An elided head says so, and its own bytes push the hits along.
+    let ellipsis = if from > 0 { "…" } else { "" };
+    let shift = ellipsis.len();
+
+    hits.retain(|(start, _)| *start >= from && *start < to);
+    for hit in hits.iter_mut() {
+        hit.0 = hit.0 - from + shift;
+        hit.1 = hit.1.min(to) - from + shift;
+    }
+
+    (format!("{ellipsis}{}", &line[from..to]), hits)
 }
 
 /// The names the search panel gives its own fields and switches.
@@ -3175,7 +3287,39 @@ fn replace_in_files(
 
 #[cfg(test)]
 mod search_panel_test {
-    use super::{normalize_glob, preserve_case};
+    use super::{normalize_glob, preserve_case, summarize_match, RegexMatcherBuilder};
+
+    #[test]
+    fn a_row_shows_the_line_without_its_indentation() {
+        let matcher = RegexMatcherBuilder::new().build("tenant").unwrap();
+        let (line, hits) = summarize_match("\t\tconst tenant = 1\n", &matcher);
+
+        assert_eq!(line, "const tenant = 1");
+        assert_eq!(hits, vec![(6, 12)]);
+        assert_eq!(&line[6..12], "tenant");
+    }
+
+    #[test]
+    fn a_hit_far_along_a_line_drags_the_window_to_it() {
+        let matcher = RegexMatcherBuilder::new().build("needle").unwrap();
+        let haystack = format!("{}needle tail", "x".repeat(200));
+        let (line, hits) = summarize_match(&haystack, &matcher);
+
+        // The head is elided rather than the hit, and the hit lands near the left.
+        assert!(line.starts_with('…'), "{line}");
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].0 < 32, "hit at {} is too far right", hits[0].0);
+        assert_eq!(&line[hits[0].0..hits[0].1], "needle");
+    }
+
+    #[test]
+    fn every_hit_on_the_line_is_weighted() {
+        let matcher = RegexMatcherBuilder::new().build("ab").unwrap();
+        let (line, hits) = summarize_match("ab cd ab\n", &matcher);
+
+        assert_eq!(line, "ab cd ab");
+        assert_eq!(hits, vec![(0, 2), (6, 8)]);
+    }
 
     #[test]
     fn preserve_case_copies_the_shape_of_the_match() {

@@ -190,6 +190,9 @@ type ColumnFormatFn<T, D> = for<'a> fn(&'a T, &'a D) -> Cell<'a>;
 
 pub struct Column<T, D> {
     name: Arc<str>,
+    /// Which end of the cell to cut when it does not fit. A path keeps its tail,
+    /// a line of text keeps its head.
+    truncate_start: bool,
     format: ColumnFormatFn<T, D>,
     /// Whether the column should be passed to nucleo for matching and filtering.
     /// `DynamicPicker` uses this so that the dynamic column (for example regex in
@@ -202,6 +205,7 @@ impl<T, D> Column<T, D> {
     pub fn new(name: impl Into<Arc<str>>, format: ColumnFormatFn<T, D>) -> Self {
         Self {
             name: name.into(),
+            truncate_start: true,
             format,
             filter: true,
             hidden: false,
@@ -214,6 +218,7 @@ impl<T, D> Column<T, D> {
 
         Self {
             name: name.into(),
+            truncate_start: true,
             format,
             filter: false,
             hidden: true,
@@ -222,6 +227,12 @@ impl<T, D> Column<T, D> {
 
     pub fn without_filtering(mut self) -> Self {
         self.filter = false;
+        self
+    }
+
+    /// Cut this column's tail rather than its head when it does not fit.
+    pub fn keeping_start(mut self) -> Self {
+        self.truncate_start = false;
         self
     }
 
@@ -1026,6 +1037,14 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             }))
         });
 
+        // A path keeps its tail so the file name survives; a column of plain text
+        // keeps its head, where the reader starts.
+        let truncate_start: Vec<bool> = self
+            .columns
+            .iter()
+            .map(|column| self.truncate_start && column.truncate_start)
+            .collect();
+
         let mut table = Table::new(options)
             .style(text_style)
             .highlight_style(selected)
@@ -1067,7 +1086,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                 offset: 0,
                 selected: Some(cursor as usize),
             },
-            self.truncate_start,
+            &truncate_start,
         );
     }
 
