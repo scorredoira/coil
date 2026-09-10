@@ -44,6 +44,15 @@ pub struct EditorView {
     spinners: ProgressSpinners,
     /// Tracks if the terminal window is focused by reaction to terminal focus events
     terminal_focused: bool,
+    /// The bufferline tabs of the last frame, so a click can land on one.
+    bufferline_tabs: Vec<BufferlineTab>,
+}
+
+struct BufferlineTab {
+    row: u16,
+    start: u16,
+    end: u16,
+    doc: helix_view::DocumentId,
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +76,7 @@ impl EditorView {
             completion: None,
             spinners: ProgressSpinners::default(),
             terminal_focused: true,
+            bufferline_tabs: Vec::new(),
         }
     }
 
@@ -660,8 +670,9 @@ impl EditorView {
     }
 
     /// Render bufferline at the top
-    pub fn render_bufferline(editor: &Editor, viewport: Rect, surface: &mut Surface) {
+    pub fn render_bufferline(&mut self, editor: &Editor, viewport: Rect, surface: &mut Surface) {
         let scratch = PathBuf::from(SCRATCH_BUFFER_NAME); // default filename to use for scratch buffer
+        self.bufferline_tabs.clear();
         surface.clear_with(
             viewport,
             editor
@@ -702,14 +713,28 @@ impl EditorView {
             let used_width = viewport.x.saturating_sub(x);
             let rem_width = surface.area.width.saturating_sub(used_width);
 
+            let start = x;
             x = surface
                 .set_stringn(x, viewport.y, &text, rem_width as usize, style)
                 .0;
+            self.bufferline_tabs.push(BufferlineTab {
+                row: viewport.y,
+                start,
+                end: x,
+                doc: doc.id(),
+            });
 
             if x >= surface.area.right() {
                 break;
             }
         }
+    }
+
+    fn bufferline_tab_at(&self, row: u16, column: u16) -> Option<helix_view::DocumentId> {
+        self.bufferline_tabs
+            .iter()
+            .find(|tab| tab.row == row && column >= tab.start && column < tab.end)
+            .map(|tab| tab.doc)
     }
 
     pub fn render_gutter<'d>(
@@ -1217,6 +1242,14 @@ impl EditorView {
             ..
         } = *event;
 
+        if kind == MouseEventKind::Down(MouseButton::Left) {
+            if let Some(doc_id) = self.bufferline_tab_at(row, column) {
+                cxt.editor
+                    .switch(doc_id, helix_view::editor::Action::Replace);
+                return EventResult::Consumed(None);
+            }
+        }
+
         let pos_and_view = |editor: &Editor, row, column, ignore_virtual_text| {
             editor.tree.views().find_map(|(view, _focus)| {
                 view.pos_at_screen_coords(
@@ -1638,7 +1671,9 @@ impl Component for EditorView {
         cx.editor.resize(editor_area);
 
         if use_bufferline {
-            Self::render_bufferline(cx.editor, area.with_height(1), surface);
+            self.render_bufferline(cx.editor, area.with_height(1), surface);
+        } else {
+            self.bufferline_tabs.clear();
         }
 
         for (view, is_focused) in cx.editor.tree.views() {
