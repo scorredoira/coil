@@ -351,6 +351,9 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     /// What `Alt-a` does with the panel's inputs and the results on screen. The
     /// search panel replaces every match with it.
     panel_action: Option<PanelCallback<T>>,
+    /// A line of help drawn on the bottom border, for what the picker cannot show
+    /// on its own: the `%field` prefixes it hides, the keys of its switches.
+    hint: &'static [&'static str],
 
     /// Whether to show the preview panel (default true)
     show_preview: bool,
@@ -490,6 +493,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             rows_offset: 0,
             last_click: None,
             panel_action: None,
+            hint: &[],
             truncate_start: true,
             show_preview: true,
             callback_fn: Box::new(callback_fn),
@@ -554,6 +558,11 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         action: impl Fn(&mut Context, &PanelInput, &[&T]) + 'static,
     ) -> Self {
         self.panel_action = Some(Box::new(action));
+        self
+    }
+
+    pub fn with_hint(mut self, hint: &'static [&'static str]) -> Self {
+        self.hint = hint;
         self
     }
 
@@ -972,6 +981,28 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         let inner = BLOCK.inner(area);
 
         BLOCK.render(area, surface);
+
+        // On the border it costs no row of results. What does not fit is dropped
+        // whole, never cut halfway through a key.
+        if !self.hint.is_empty() {
+            let width = area.width.saturating_sub(4) as usize;
+            let mut hint = String::new();
+
+            for item in self.hint {
+                let next = if hint.is_empty() {
+                    format!(" {item} ")
+                } else {
+                    format!("{hint} {item} ")
+                };
+                if next.chars().count() > width {
+                    break;
+                }
+                hint = next;
+            }
+
+            let y = area.bottom().saturating_sub(1);
+            surface.set_stringn(area.x + 2, y, &hint, width, text_style);
+        }
 
         // -- Render the input bar:
 

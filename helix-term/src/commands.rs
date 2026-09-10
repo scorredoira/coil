@@ -2862,6 +2862,13 @@ fn global_search(cx: &mut Context) {
         PanelToggle::new(REGEX, ".*", 'r', true),
         PanelToggle::new(PRESERVE_CASE, "AB", 'p', false),
     ])
+    .with_hint(&[
+        "%r replace",
+        "%i include",
+        "%e exclude",
+        "A-a apply",
+        "A-c/w/r/p switches",
+    ])
     .with_panel_action(|cx, input, results| {
         let paths: Vec<PathBuf> = results
             .iter()
