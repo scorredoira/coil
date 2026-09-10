@@ -37,6 +37,7 @@ use std::{
         atomic::{self, AtomicUsize},
         Arc,
     },
+    time::{Duration, Instant},
 };
 
 use crate::ui::{Prompt, PromptEvent};
@@ -47,7 +48,7 @@ use helix_core::{
 use helix_view::{
     editor::Action,
     graphics::{CursorKind, Margin, Modifier, Rect},
-    input::KeyEvent,
+    input::{KeyEvent, MouseButton, MouseEvent, MouseEventKind},
     keyboard::{KeyCode, KeyModifiers},
     theme::Style,
     view::ViewPosition,
@@ -57,6 +58,10 @@ use helix_view::{
 use self::handlers::{DynamicQueryChange, DynamicQueryHandler, PreviewHighlightHandler};
 
 pub const ID: &str = "picker";
+
+/// Two clicks on the same row closer than this are a double click: the terminal
+/// reports each press on its own, so the picker has to tell them apart itself.
+const DOUBLE_CLICK: Duration = Duration::from_millis(500);
 
 pub const MIN_AREA_WIDTH_FOR_PREVIEW: u16 = 72;
 /// Biggest file size to preview in bytes
@@ -337,6 +342,12 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     /// Filled during render, which the compositor always runs before asking for the
     /// cursor.
     toggle_positions: Vec<Position>,
+    /// Where the result rows were last drawn and which match the first of them is,
+    /// so a click can be turned back into the row it landed on.
+    rows_area: Rect,
+    rows_offset: u32,
+    /// The row last clicked and when, so a second click on it opens it.
+    last_click: Option<(u32, Instant)>,
     /// What `Alt-a` does with the panel's inputs and the results on screen. The
     /// search panel replaces every match with it.
     panel_action: Option<PanelCallback<T>>,
@@ -475,6 +486,9 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             panel_toggles: Vec::new(),
             focus: 0,
             toggle_positions: Vec::new(),
+            rows_area: Rect::default(),
+            rows_offset: 0,
+            last_click: None,
             panel_action: None,
             truncate_start: true,
             show_preview: true,
@@ -671,6 +685,88 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
 
     pub fn toggle_preview(&mut self) {
         self.show_preview = !self.show_preview;
+    }
+
+    /// Opens the selected match, as Enter does, and closes the picker.
+    fn accept(&mut self, ctx: &mut Context) -> EventResult {
+        if let Some(option) = self.selection() {
+            (self.callback_fn)(ctx, option, self.default_action);
+        }
+        if let Some(history_register) = self.prompt.history_register() {
+            if let Err(err) = ctx
+                .editor
+                .registers
+                .push(history_register, self.primary_query().to_string())
+            {
+                ctx.editor.set_error(err.to_string());
+            }
+        }
+        self.close()
+    }
+
+    fn close(&mut self) -> EventResult {
+        // if the picker is very large don't store it as last_picker to avoid
+        // excessive memory consumption
+        let callback: compositor::Callback = if self.matcher.snapshot().item_count() > 1_000_000 {
+            Box::new(|compositor: &mut Compositor, _ctx| {
+                // remove the layer
+                compositor.pop();
+            })
+        } else {
+            // stop streaming in new items in the background, really we should
+            // be restarting the stream somehow once the picker gets
+            // reopened instead (like for an FS crawl) that would also remove the
+            // need for the special case above but that is pretty tricky
+            self.version.fetch_add(1, atomic::Ordering::Relaxed);
+            Box::new(|compositor: &mut Compositor, _ctx| {
+                // remove the layer
+                compositor.last_picker = compositor.pop();
+            })
+        };
+        EventResult::Consumed(Some(callback))
+    }
+
+    /// A click marks the row it lands on, so the preview shows it, and a second
+    /// click on that row opens it. The wheel walks the list without opening anything.
+    fn handle_mouse(&mut self, event: &MouseEvent, ctx: &mut Context) -> EventResult {
+        let len = self.matcher.snapshot().matched_item_count();
+        let lines = ctx.editor.config().scroll_lines.unsigned_abs() as u32;
+
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let area = self.rows_area;
+                let inside = event.row >= area.y
+                    && event.row < area.bottom()
+                    && event.column >= area.x
+                    && event.column < area.right();
+                let index = self.rows_offset + event.row.saturating_sub(area.y) as u32;
+                if !inside || index >= len {
+                    return EventResult::Consumed(None);
+                }
+
+                let now = Instant::now();
+                let double = self
+                    .last_click
+                    .is_some_and(|(row, at)| row == index && now.duration_since(at) < DOUBLE_CLICK);
+                self.cursor = index;
+                if double {
+                    self.last_click = None;
+                    return self.accept(ctx);
+                }
+                self.last_click = Some((index, now));
+            }
+            MouseEventKind::ScrollDown => {
+                self.cursor = self.cursor.saturating_add(lines).min(len.saturating_sub(1));
+            }
+            MouseEventKind::ScrollUp => {
+                self.cursor = self.cursor.saturating_sub(lines);
+            }
+            _ => {}
+        }
+
+        // Picker is a modal and should consume mouse events so clicks don't fall
+        // through to the editor underneath
+        EventResult::Consumed(None)
     }
 
     fn prompt_handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
@@ -953,6 +1049,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         let end = offset
             .saturating_add(rows)
             .min(snapshot.matched_item_count());
+        self.rows_area = inner.clip_top(self.header_height());
+        self.rows_offset = offset;
         let mut indices = Vec::new();
         let mut matcher = MATCHER.lock();
         matcher.config = Config::DEFAULT;
@@ -1268,33 +1366,8 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
             Event::Key(event) => *event,
             Event::Paste(..) => return self.prompt_handle_event(event, ctx),
             Event::Resize(..) => return EventResult::Consumed(None),
-            // Picker is a modal and should consume mouse events so clicks don't fall
-            // through to the editor underneath
-            Event::Mouse(_) => return EventResult::Consumed(None),
+            Event::Mouse(event) => return self.handle_mouse(event, ctx),
             _ => return EventResult::Ignored(None),
-        };
-
-        let close_fn = |picker: &mut Self| {
-            // if the picker is very large don't store it as last_picker to avoid
-            // excessive memory consumption
-            let callback: compositor::Callback =
-                if picker.matcher.snapshot().item_count() > 1_000_000 {
-                    Box::new(|compositor: &mut Compositor, _ctx| {
-                        // remove the layer
-                        compositor.pop();
-                    })
-                } else {
-                    // stop streaming in new items in the background, really we should
-                    // be restarting the stream somehow once the picker gets
-                    // reopened instead (like for an FS crawl) that would also remove the
-                    // need for the special case above but that is pretty tricky
-                    picker.version.fetch_add(1, atomic::Ordering::Relaxed);
-                    Box::new(|compositor: &mut Compositor, _ctx| {
-                        // remove the layer
-                        compositor.last_picker = compositor.pop();
-                    })
-                };
-            EventResult::Consumed(Some(callback))
         };
 
         // A panel's switches are flipped with Alt + their own key, whichever line the
@@ -1339,7 +1412,7 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
             key!(End) => {
                 self.to_end();
             }
-            key!(Esc) | ctrl!('c') => return close_fn(self),
+            key!(Esc) | ctrl!('c') => return self.close(),
             alt!(Enter) => {
                 if let Some(option) = self.selection() {
                     (self.callback_fn)(ctx, option, self.default_action);
@@ -1365,32 +1438,20 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
                     // Inserting from the history register is a paste.
                     self.handle_prompt_change(true);
                 } else {
-                    if let Some(option) = self.selection() {
-                        (self.callback_fn)(ctx, option, self.default_action);
-                    }
-                    if let Some(history_register) = self.prompt.history_register() {
-                        if let Err(err) = ctx
-                            .editor
-                            .registers
-                            .push(history_register, self.primary_query().to_string())
-                        {
-                            ctx.editor.set_error(err.to_string());
-                        }
-                    }
-                    return close_fn(self);
+                    return self.accept(ctx);
                 }
             }
             ctrl!('s') => {
                 if let Some(option) = self.selection() {
                     (self.callback_fn)(ctx, option, Action::HorizontalSplit);
                 }
-                return close_fn(self);
+                return self.close();
             }
             ctrl!('v') => {
                 if let Some(option) = self.selection() {
                     (self.callback_fn)(ctx, option, Action::VerticalSplit);
                 }
-                return close_fn(self);
+                return self.close();
             }
             ctrl!('t') => {
                 self.toggle_preview();
