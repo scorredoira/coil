@@ -742,7 +742,39 @@ fn no_op(_cx: &mut Context) {}
 type MoveFn =
     fn(RopeSlice, Range, Direction, usize, Movement, &TextFormat, &mut TextAnnotations) -> Range;
 
+/// A command that EXTENDS the selection while typing says so, and from then on the next
+/// key typed replaces what is selected, the way every editor works. It answers whether
+/// this is the FIRST one, which starts from the caret: what normal mode had selected is
+/// not what is being extended here.
+pub(crate) fn mark_insert_selection(editor: &mut Editor) -> bool {
+    if editor.mode != Mode::Insert || editor.insert_selection {
+        return false;
+    }
+
+    editor.insert_selection = true;
+
+    true
+}
+
+/// Where a range being extended while typing runs from and to. The first extension
+/// starts from the caret alone; after that the anchor stays where it was.
+fn typing_extent(range: Range, text: RopeSlice, first: bool) -> (usize, usize) {
+    if first {
+        let caret = range.cursor(text);
+        return (caret, caret);
+    }
+
+    (range.anchor, range.head)
+}
+
 fn move_impl(cx: &mut Context, move_fn: MoveFn, dir: Direction, behaviour: Movement) {
+    let extending = behaviour == Movement::Extend;
+    let first = extending && mark_insert_selection(cx.editor);
+
+    // While typing the cursor is a bar between two characters, so the head moves one
+    // step and the anchor stays: never the grapheme a block cursor sits on as well.
+    let typing = extending && cx.editor.mode == Mode::Insert;
+
     let count = cx.count();
     let (view, doc) = current!(cx.editor);
     let text = doc.text().slice(..);
@@ -750,15 +782,25 @@ fn move_impl(cx: &mut Context, move_fn: MoveFn, dir: Direction, behaviour: Movem
     let mut annotations = view.text_annotations(doc, None);
 
     let selection = doc.selection(view.id).clone().transform(|range| {
-        move_fn(
+        let (anchor, head) = typing_extent(range, text, first);
+        let from = if typing { Range::point(head) } else { range };
+        let behaviour = if typing { Movement::Move } else { behaviour };
+        let moved = move_fn(
             text,
-            range,
+            from,
             dir,
             count,
             behaviour,
             &text_fmt,
             &mut annotations,
-        )
+        );
+
+        if typing {
+            // A movement lands a block cursor ON a grapheme; the caret goes before it.
+            Range::new(anchor, moved.cursor(text))
+        } else {
+            moved
+        }
     });
     drop(annotations);
     doc.set_selection(view.id, selection);
@@ -863,6 +905,16 @@ fn goto_line_end(cx: &mut Context) {
 }
 
 fn extend_to_line_end(cx: &mut Context) {
+    let first = mark_insert_selection(cx.editor);
+
+    if cx.editor.mode == Mode::Insert {
+        extend_while_typing(cx, first, |text, head| {
+            let line = text.char_to_line(head);
+            line_end_char_index(&text, line)
+        });
+        return;
+    }
+
     let (view, doc) = current!(cx.editor);
     goto_line_end_impl(view, doc, Movement::Extend)
 }
@@ -957,8 +1009,32 @@ fn goto_buffer(editor: &mut Editor, direction: Direction, count: usize) {
 }
 
 fn extend_to_line_start(cx: &mut Context) {
+    let first = mark_insert_selection(cx.editor);
+
+    if cx.editor.mode == Mode::Insert {
+        extend_while_typing(cx, first, |text, head| {
+            let line = text.char_to_line(head);
+            text.line_to_char(line)
+        });
+        return;
+    }
+
     let (view, doc) = current!(cx.editor);
     goto_line_start_impl(view, doc, Movement::Extend)
+}
+
+/// Moves the head of every range to where `head_at` says, the anchor staying put: how a
+/// selection grows while typing.
+fn extend_while_typing(cx: &mut Context, first: bool, head_at: impl Fn(RopeSlice, usize) -> usize) {
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        let (anchor, head) = typing_extent(range, text, first);
+
+        Range::new(anchor, head_at(text, head))
+    });
+    doc.set_selection(view.id, selection);
 }
 
 fn kill_to_line_start(cx: &mut Context) {
@@ -1606,11 +1682,20 @@ fn extend_word_impl<F>(cx: &mut Context, extend_fn: F)
 where
     F: Fn(RopeSlice, Range, usize) -> Range,
 {
+    let first = mark_insert_selection(cx.editor);
+    let typing = cx.editor.mode == Mode::Insert;
+
     let count = cx.count();
     let (view, doc) = current!(cx.editor);
     let text = doc.text().slice(..);
 
     let selection = doc.selection(view.id).clone().transform(|range| {
+        if typing {
+            let (anchor, head) = typing_extent(range, text, first);
+            let word = extend_fn(text, Range::point(head), count);
+            return Range::new(anchor, word.cursor(text));
+        }
+
         let word = extend_fn(text, range, count);
         let pos = word.cursor(text);
         range.put_cursor(text, pos, true)
@@ -2199,6 +2284,9 @@ fn copy_selection_on_next_line(cx: &mut Context) {
 }
 
 fn select_all(cx: &mut Context) {
+    mark_insert_selection(cx.editor);
+    cx.editor.insert_selection = cx.editor.mode == Mode::Insert;
+
     let (view, doc) = current!(cx.editor);
 
     let end = doc.text().len_chars();
@@ -3979,6 +4067,8 @@ fn ensure_selections_forward(cx: &mut Context) {
 }
 
 fn enter_insert_mode(cx: &mut Context) {
+    // Whatever was selected in normal mode is not a selection typing replaces.
+    cx.editor.insert_selection = false;
     cx.editor.mode = Mode::Insert;
 }
 
@@ -5267,7 +5357,42 @@ pub mod insert {
     use helix_core::auto_pairs;
     use helix_view::editor::SmartTabConfig;
 
+    /// What was selected WHILE typing goes, the way every editor works, and the insert
+    /// then happens where the deletion left the cursor. The selection insert mode was
+    /// entered with is not touched: it is what the normal-mode commands work on.
+    pub fn replace_selection(cx: &mut Context) {
+        if !something_selected(cx) {
+            return;
+        }
+
+        let (view, doc) = current!(cx.editor);
+        let selection = doc.selection(view.id);
+
+        let transaction = Transaction::delete_by_selection(doc.text(), selection, |range| {
+            (range.from(), range.to())
+        });
+        doc.apply(&transaction, view.id);
+
+        // Nothing is selected any more. Saying so matters: what a deletion leaves behind
+        // is grown back to one grapheme — the one to the RIGHT of the cursor — and the
+        // next Backspace would take that instead of the character before it.
+        cx.editor.insert_selection = false;
+    }
+
+    /// Whether something was selected while typing, so a key that would delete one
+    /// character deletes that instead.
+    fn something_selected(cx: &Context) -> bool {
+        if !cx.editor.insert_selection {
+            return false;
+        }
+
+        let (view, doc) = current_ref!(cx.editor);
+        !doc.selection(view.id).ranges().iter().all(Range::is_empty)
+    }
+
     pub fn insert_char(cx: &mut Context, c: char) {
+        replace_selection(cx);
+
         let (view, doc) = current_ref!(cx.editor);
         let text = doc.text();
         let selection = doc.selection(view.id);
@@ -5332,6 +5457,8 @@ pub mod insert {
     }
 
     fn insert_tab_impl(cx: &mut Context, count: usize) {
+        replace_selection(cx);
+
         let (view, doc) = current!(cx.editor);
 
         let transaction = Transaction::change(
@@ -5398,6 +5525,8 @@ pub mod insert {
     }
 
     pub fn insert_newline(cx: &mut Context) {
+        replace_selection(cx);
+
         let config = cx.editor.config();
         let (view, doc) = current_ref!(cx.editor);
         let loader = cx.editor.syn_loader.load();
@@ -5608,6 +5737,11 @@ pub mod insert {
     }
 
     pub fn delete_char_backward(cx: &mut Context) {
+        if something_selected(cx) {
+            replace_selection(cx);
+            return;
+        }
+
         let count = cx.count();
         let (view, doc) = current_ref!(cx.editor);
         let text = doc.text().slice(..);
@@ -5651,6 +5785,11 @@ pub mod insert {
     }
 
     pub fn delete_char_forward(cx: &mut Context) {
+        if something_selected(cx) {
+            replace_selection(cx);
+            return;
+        }
+
         let count = cx.count();
         delete_by_selection_insert_mode(
             cx,
@@ -5946,6 +6085,10 @@ fn paste_impl(
 }
 
 pub(crate) fn paste_bracketed_value(cx: &mut Context, contents: String) {
+    if cx.editor.mode == Mode::Insert {
+        insert::replace_selection(cx);
+    }
+
     let count = cx.count();
     let paste = match cx.editor.mode {
         Mode::Insert | Mode::Select => Paste::Cursor,

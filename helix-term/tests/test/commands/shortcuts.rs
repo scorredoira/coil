@@ -15,6 +15,14 @@ fn with_shortcuts() -> AppBuilder {
         }),
     );
 
+    config.keys.insert(
+        Mode::Insert,
+        keymap!({"Insert mode"
+            "C-a" => select_all,
+            "S-right" => extend_char_right,
+        }),
+    );
+
     AppBuilder::new().with_config(config)
 }
 
@@ -115,6 +123,53 @@ async fn backspace_deletes_what_is_selected() -> anyhow::Result<()> {
     test_with_config(
         with_shortcuts(),
         ("#[ab|]##(c|)#d", "<backspace>", "#[c|]#d"),
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn typing_over_a_selection_replaces_it() -> anyhow::Result<()> {
+    test_with_config(
+        with_shortcuts(),
+        ("#[a|]#bcd", "i<S-right><S-right>X", "X#[c|]#d"),
+    )
+    .await?;
+
+    // Everything selected, the line feed included, and one letter left.
+    test_with_config(
+        with_shortcuts(),
+        ("#[a|]#bcd\n", "i<C-a>X", "X#[|]#", LineFeedHandling::AsIs),
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn backspace_while_typing_takes_the_selection_whole() -> anyhow::Result<()> {
+    test_with_config(
+        with_shortcuts(),
+        ("#[a|]#bcd", "i<S-right><S-right><backspace>", "#[c|]#d"),
+    )
+    .await?;
+
+    test_with_config(
+        with_shortcuts(),
+        ("#[a|]#bcd", "i<S-right><S-right><del>", "#[c|]#d"),
+    )
+    .await?;
+
+    // And once it is gone, Backspace goes back to taking the character before the
+    // cursor, never the one after it.
+    test_with_config(
+        with_shortcuts(),
+        (
+            "#[a|]#bcd",
+            "i<right><right><S-right><backspace><backspace>",
+            "a#[d|]#",
+        ),
     )
     .await?;
 

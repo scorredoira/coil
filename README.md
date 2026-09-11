@@ -98,6 +98,7 @@ you already know:
 | Key | Does |
 |---|---|
 | `Ctrl-a` | Select everything |
+| `Shift` + an arrow | Select while typing (`Ctrl-Shift` for whole words) |
 | `Backspace` | Delete the selection, or the character before the cursor |
 | `Delete` | Delete the selection, or the character under the cursor |
 | `Ctrl-c` | Copy the selection to the system clipboard |
@@ -114,6 +115,12 @@ you already know:
 
 On a Mac `Cmd-c` copies and `Cmd-s` saves as well, and a `Cmd` or `Ctrl` key
 nothing is bound to never types its letter.
+
+While typing, a selection behaves as it does in any other editor: `Shift` with
+an arrow, `Home` or `End` grows it from the cursor, the mouse drags one, typing
+replaces it and `Backspace` or `Delete` removes it. None of that leaves insert
+mode, and none of it touches how selections work outside it, where they are what
+the commands act on.
 
 And the editor starts the way you would set it up: long lines wrap,
 indentation guides show, open files are tabs, the cursor is a bar while
@@ -134,7 +141,8 @@ The keys are Helix's, and so is its documentation:
 [docs.helix-editor.com](https://docs.helix-editor.com/) applies as it is —
 except for the keys above: `Ctrl-c` copies (comment with `Space c`), `Ctrl-a`
 selects everything (incrementing a number keeps no key), `Ctrl-s` saves and
-`Ctrl-f` searches the file (a page down is `PageDown`). Coil keeps
+`Ctrl-f` searches the file (a page down is `PageDown`) — and that while typing
+a selection is replaced by what you type, which Helix leaves alone. Coil keeps
 its own files, so the two never mix:
 
 | | Helix | Coil |

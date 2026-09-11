@@ -1360,6 +1360,9 @@ pub struct Editor {
     /// times during rendering and should not be set by other functions.
     pub handlers: Handlers,
 
+    /// Whether what is selected was selected WHILE typing: then typing over it replaces
+    /// it, as any editor does. The selection insert mode was entered with is not that.
+    pub insert_selection: bool,
     pub mouse_down_range: Option<Range>,
     pub cursor_cache: CursorCache,
     pub workspace_trust: WorkspaceTrust,
@@ -1447,6 +1450,7 @@ impl Editor {
 
         Self {
             mode: Mode::Normal,
+            insert_selection: false,
             tree: Tree::new(area),
             next_document_id: DocumentId::default(),
             documents: BTreeMap::new(),

@@ -1429,6 +1429,9 @@ impl EditorView {
             }
 
             MouseEventKind::Drag(MouseButton::Left) => {
+                // A drag while typing selects, like Shift with an arrow does.
+                let _ = commands::mark_insert_selection(cxt.editor);
+
                 let (view, doc) = current!(cxt.editor);
 
                 let pos = match view.pos_at_screen_coords(doc, row, column, true) {
@@ -1719,6 +1722,7 @@ impl Component for EditorView {
 
                 let config = cx.editor.config();
                 let mode = cx.editor.mode();
+
                 let (view, doc) = current!(cx.editor);
 
                 view.ensure_cursor_in_view(doc, config.scrolloff);
