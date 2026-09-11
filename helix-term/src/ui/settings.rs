@@ -1,0 +1,420 @@
+use std::path::{Path, PathBuf};
+
+use anyhow::Context as _;
+use helix_view::{
+    editor::ConfigEvent,
+    graphics::{Margin, Rect},
+    input::{KeyCode, KeyEvent, MouseButton, MouseEventKind},
+    theme::Modifier,
+    Editor,
+};
+use serde_json::Value;
+use tui::{
+    buffer::Buffer as Surface,
+    widgets::{Block, Widget},
+};
+
+use crate::compositor::{Component, Context, Event, EventResult};
+
+/// What a setting can be: a switch, or one of a few words.
+enum Kind {
+    Switch,
+    /// The words it cycles through, in order.
+    Words(&'static [&'static str]),
+}
+
+/// One line of the screen: what it reads as, the configuration it stands for, and what
+/// kind of answer it takes.
+struct Setting {
+    label: &'static str,
+    /// The key as `config.toml` writes it, dots and all.
+    key: &'static str,
+    kind: Kind,
+}
+
+/// The settings the screen offers. Everything else stays in `config.toml`, where the
+/// whole of Helix's configuration lives.
+const SETTINGS: &[Setting] = &[
+    Setting {
+        label: "Wrap long lines",
+        key: "soft-wrap.enable",
+        kind: Kind::Switch,
+    },
+    Setting {
+        label: "Save when you leave a file",
+        key: "auto-save.focus-lost",
+        kind: Kind::Switch,
+    },
+    Setting {
+        label: "Save while you type",
+        key: "auto-save.after-delay.enable",
+        kind: Kind::Switch,
+    },
+    Setting {
+        label: "Line numbers",
+        key: "line-number",
+        kind: Kind::Words(&["absolute", "relative"]),
+    },
+    Setting {
+        label: "Tabs for the open files",
+        key: "bufferline",
+        kind: Kind::Words(&["multiple", "always", "never"]),
+    },
+    Setting {
+        label: "Indentation guides",
+        key: "indent-guides.render",
+        kind: Kind::Switch,
+    },
+    Setting {
+        label: "Highlight the line the cursor is on",
+        key: "cursorline",
+        kind: Kind::Switch,
+    },
+    Setting {
+        label: "The mode colours the status line",
+        key: "color-modes",
+        kind: Kind::Switch,
+    },
+    Setting {
+        label: "The picker obeys .gitignore",
+        key: "file-picker.git-ignore",
+        kind: Kind::Switch,
+    },
+    Setting {
+        label: "The mouse",
+        key: "mouse",
+        kind: Kind::Switch,
+    },
+];
+
+/// The settings a newcomer reaches for, each with what it is set to now. Up and down
+/// walk them, Space or Enter changes the one in focus, a click changes the one it lands
+/// on, and every change is written to `config.toml` as it is made.
+pub struct Settings {
+    cursor: usize,
+    /// Where each line was drawn last, so a click can land on one.
+    rows: Vec<Rect>,
+}
+
+/// The room around the text inside the border.
+const PADDING: u16 = 2;
+/// The columns between the longest label and its value.
+const GAP: u16 = 4;
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Settings {
+    pub fn new() -> Self {
+        Self {
+            cursor: 0,
+            rows: Vec::new(),
+        }
+    }
+
+    fn walk(&mut self, down: bool) {
+        let last = SETTINGS.len() - 1;
+        self.cursor = if down {
+            (self.cursor + 1) % SETTINGS.len()
+        } else {
+            self.cursor.checked_sub(1).unwrap_or(last)
+        };
+    }
+
+    /// Changes the setting in focus: a switch flips, a word gives way to the next one.
+    fn change(&mut self, cx: &mut Context) {
+        let setting = &SETTINGS[self.cursor];
+        let current = read(cx.editor, setting.key);
+        let next = match (&setting.kind, &current) {
+            (Kind::Switch, Value::Bool(on)) => Value::Bool(!on),
+            (Kind::Words(words), Value::String(word)) => {
+                let at = words.iter().position(|option| option == word);
+                let next = at.map_or(0, |at| (at + 1) % words.len());
+                Value::String(words[next].to_string())
+            }
+            _ => {
+                cx.editor
+                    .set_error(format!("'{}' is not a setting we can change", setting.key));
+                return;
+            }
+        };
+
+        if let Err(err) = apply(cx.editor, setting.key, &next) {
+            log::error!("Could not change '{}': {err:#}", setting.key);
+            cx.editor.set_error(format!("Could not change it: {err:#}"));
+            return;
+        }
+
+        if let Err(err) = write_setting(&helix_loader::config_file(), setting.key, &next) {
+            log::error!("Could not write '{}' to config.toml: {err:#}", setting.key);
+            cx.editor
+                .set_error(format!("Changed, but not written down: {err:#}"));
+        }
+    }
+}
+
+/// What a setting is set to right now.
+fn read(editor: &Editor, key: &str) -> Value {
+    let config = serde_json::json!(&*editor.config());
+    let pointer = format!("/{}", key.replace('.', "/"));
+
+    config.pointer(&pointer).cloned().unwrap_or(Value::Null)
+}
+
+/// Puts the new value in the running editor, which redraws with it at once.
+fn apply(editor: &mut Editor, key: &str, value: &Value) -> anyhow::Result<()> {
+    let mut config = serde_json::json!(&*editor.config());
+    let pointer = format!("/{}", key.replace('.', "/"));
+    let at = config
+        .pointer_mut(&pointer)
+        .with_context(|| format!("'{key}' is not a setting"))?;
+    *at = value.clone();
+
+    let config = serde_json::from_value(config).context("the change does not fit the settings")?;
+    editor
+        .config_events
+        .0
+        .send(ConfigEvent::Update(config))
+        .context("the editor did not take the change")?;
+
+    Ok(())
+}
+
+/// Writes one setting into the user's `config.toml`, leaving every other line of it —
+/// its comments and its order included — exactly as it was.
+fn write_setting(path: &Path, key: &str, value: &Value) -> anyhow::Result<()> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
+    };
+
+    let mut document: toml_edit::DocumentMut = text
+        .parse()
+        .with_context(|| format!("{} is not valid TOML", path.display()))?;
+
+    // Every setting of ours lives under [editor], and the key's dots are tables.
+    let mut table = document
+        .as_table_mut()
+        .entry("editor")
+        .or_insert_with(implicit_table);
+    let mut names = key.split('.').peekable();
+    while let Some(name) = names.next() {
+        if names.peek().is_none() {
+            table
+                .as_table_like_mut()
+                .with_context(|| format!("'{name}' is not a table in {}", path.display()))?
+                .insert(name, toml_edit::value(as_toml(value)?));
+            break;
+        }
+
+        table = table
+            .as_table_like_mut()
+            .with_context(|| format!("'{name}' is not a table in {}", path.display()))?
+            .entry(name)
+            .or_insert(implicit_table());
+    }
+
+    write_atomically(path, document.to_string())
+}
+
+/// A table nobody asked for by name: it is written only if it ends up holding something,
+/// so a fresh file gets `[editor.auto-save]` and not an empty `[editor]` above it.
+fn implicit_table() -> toml_edit::Item {
+    let mut table = toml_edit::Table::new();
+    table.set_implicit(true);
+
+    toml_edit::Item::Table(table)
+}
+
+fn as_toml(value: &Value) -> anyhow::Result<toml_edit::Value> {
+    match value {
+        Value::Bool(on) => Ok((*on).into()),
+        Value::String(word) => Ok(word.as_str().into()),
+        Value::Number(number) if number.is_i64() => Ok(number
+            .as_i64()
+            .expect("an integer was just checked for")
+            .into()),
+        Value::Number(number) => Ok(number
+            .as_f64()
+            .expect("a number is an integer or a float")
+            .into()),
+        other => anyhow::bail!("{other} cannot be written to config.toml"),
+    }
+}
+
+/// Written aside and renamed over, so a crash never leaves half a configuration.
+fn write_atomically(path: &Path, text: String) -> anyhow::Result<()> {
+    let directory = path
+        .parent()
+        .context("the configuration file sits in a directory")?;
+    std::fs::create_dir_all(directory)
+        .with_context(|| format!("creating {}", directory.display()))?;
+
+    let temporary: PathBuf = directory.join(format!(".config.{}.toml", std::process::id()));
+    std::fs::write(&temporary, text).with_context(|| format!("writing {}", temporary.display()))?;
+    std::fs::rename(&temporary, path).with_context(|| format!("replacing {}", path.display()))?;
+
+    Ok(())
+}
+
+/// How a value reads on screen.
+fn shown(value: &Value) -> String {
+    match value {
+        Value::Bool(true) => "on".to_string(),
+        Value::Bool(false) => "off".to_string(),
+        Value::String(word) => word.clone(),
+        other => other.to_string(),
+    }
+}
+
+impl Component for Settings {
+    fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
+        let labels = SETTINGS
+            .iter()
+            .map(|setting| setting.label.chars().count())
+            .max()
+            .unwrap_or(0) as u16;
+        let values = SETTINGS
+            .iter()
+            .map(|setting| shown(&read(cx.editor, setting.key)).chars().count())
+            .max()
+            .unwrap_or(0) as u16;
+
+        let hint = "Space changes it  ·  Esc closes";
+        let inside = (labels + GAP + values).max(hint.chars().count() as u16);
+        let width = (inside + PADDING * 2 + 2).min(area.width);
+        // The title, a blank row, the settings, a blank row and the hint, plus borders.
+        let height = (SETTINGS.len() as u16 + 6).min(area.height);
+        let screen = Rect::new(
+            area.x + area.width.saturating_sub(width) / 2,
+            area.y + area.height.saturating_sub(height) / 2,
+            width,
+            height,
+        );
+
+        let theme = &cx.editor.theme;
+        let background = theme.get("ui.popup");
+        let text = theme.get("ui.text");
+        let selected = theme.get("ui.menu").patch(theme.get("ui.menu.selected"));
+        let value_style = theme.get("constant");
+        let dim = theme.get("ui.text.inactive");
+
+        surface.clear_with(screen, background);
+        let block = Block::bordered().style(background);
+        let inner = block.inner(screen).inner(Margin::horizontal(PADDING - 1));
+        block.render(screen, surface);
+
+        let bold = text.add_modifier(Modifier::BOLD);
+        surface.set_stringn(inner.x, inner.y, "Settings", inner.width as usize, bold);
+
+        self.rows.clear();
+        for (index, setting) in SETTINGS.iter().enumerate() {
+            let y = inner.y + 2 + index as u16;
+            if y >= inner.bottom() {
+                break;
+            }
+
+            let focused = index == self.cursor;
+            let row = Rect::new(inner.x, y, inner.width, 1);
+            if focused {
+                surface.set_style(row, selected);
+            }
+
+            let label_style = if focused { selected } else { text };
+            surface.set_stringn(inner.x, y, setting.label, inner.width as usize, label_style);
+
+            let value = shown(&read(cx.editor, setting.key));
+            let at = inner.right().saturating_sub(value.chars().count() as u16);
+            let style = if focused { selected } else { value_style };
+            surface.set_stringn(at, y, &value, inner.width as usize, style);
+
+            self.rows.push(row);
+        }
+
+        let y = inner.bottom().saturating_sub(1);
+        surface.set_stringn(inner.x, y, hint, inner.width as usize, dim);
+    }
+
+    fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
+        match event {
+            Event::Key(key) => self.handle_key(*key, cx),
+            Event::Mouse(event) => {
+                if event.kind != MouseEventKind::Down(MouseButton::Left) {
+                    return EventResult::Consumed(None);
+                }
+
+                let hit = self.rows.iter().position(|row| {
+                    event.row == row.y && event.column >= row.x && event.column < row.right()
+                });
+                if let Some(index) = hit {
+                    self.cursor = index;
+                    self.change(cx);
+                }
+
+                EventResult::Consumed(None)
+            }
+            // The screen is modal: nothing behind it hears a thing until it closes.
+            _ => EventResult::Consumed(None),
+        }
+    }
+}
+
+impl Settings {
+    fn handle_key(&mut self, key: KeyEvent, cx: &mut Context) -> EventResult {
+        match key.code {
+            KeyCode::Esc => {
+                return EventResult::Consumed(Some(Box::new(|compositor, _| {
+                    compositor.pop();
+                })))
+            }
+            KeyCode::Down | KeyCode::Tab | KeyCode::Char('j') => self.walk(true),
+            KeyCode::Up | KeyCode::Char('k') => self.walk(false),
+            KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right => self.change(cx),
+            _ => {}
+        }
+
+        EventResult::Consumed(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_setting_is_written_where_it_belongs() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "# mine, and it stays\ntheme = \"github_dark\"\n\n[editor]\nmouse = true\n",
+        )
+        .unwrap();
+
+        write_setting(&path, "soft-wrap.enable", &Value::Bool(false)).unwrap();
+        write_setting(&path, "line-number", &Value::String("relative".to_string())).unwrap();
+
+        let written = std::fs::read_to_string(&path).unwrap();
+
+        assert!(written.contains("# mine, and it stays"));
+        assert!(written.contains("theme = \"github_dark\""));
+        assert!(written.contains("mouse = true"));
+        assert!(written.contains("line-number = \"relative\""));
+        assert!(written.contains("[editor.soft-wrap]\nenable = false"));
+    }
+
+    #[test]
+    fn a_file_that_is_not_there_yet_is_written_whole() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("coil").join("config.toml");
+
+        write_setting(&path, "auto-save.focus-lost", &Value::Bool(true)).unwrap();
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(written, "[editor.auto-save]\nfocus-lost = true\n");
+    }
+}

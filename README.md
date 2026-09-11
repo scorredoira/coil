@@ -114,6 +114,7 @@ you already know:
 | `F2` | Rename the symbol |
 | `F8` | Next diagnostic |
 | `Ctrl-q` | Save everything and quit |
+| `Ctrl-,` | Settings |
 | `Space Space` | Search and replace across the project (`Space /` too) |
 
 On a Mac `Cmd-c` copies and `Cmd-s` saves as well, and a `Cmd` or `Ctrl` key
@@ -149,6 +150,16 @@ these defaults: write only what you want different.
 Copying over SSH reaches your own machine's clipboard when the terminal
 supports OSC 52: Ghostty, kitty and WezTerm do, iTerm2 once it is allowed in
 its settings.
+
+## Settings on the screen
+
+`Ctrl-,` opens the handful of settings a newcomer reaches for, each showing what
+it is set to now: wrapping, saving, line numbers, tabs, the mouse. Up and down
+walk them, `Space` or a click changes the one in focus, and the change applies at
+once and is written to `~/.config/coil/config.toml` as it is made — only the line
+it touches, so the rest of the file, comments included, stays as you wrote it.
+
+![The settings on screen, over the file being edited](fork/screenshots/settings.png)
 
 ## Coming from Helix
 

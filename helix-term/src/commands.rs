@@ -421,6 +421,7 @@ impl MappableCommand {
         sidebar_toggle, "Show or hide the sidebar",
         markdown_preview_toggle, "Show or hide the Markdown preview beside the file",
         quit_saving, "Save every file that has one and quit, asking about what cannot be saved",
+        settings, "Show the settings, and write what you change to config.toml",
         file_history, "Show the history of the current file in the sidebar",
         blame_line, "Show who last changed the current line; again opens that commit",
         code_action, "Perform code action",
@@ -4254,37 +4255,52 @@ pub(crate) fn unsaveable(editor: &Editor) -> Vec<String> {
         .collect()
 }
 
+/// The settings a newcomer reaches for, on screen instead of in a file nobody knows is
+/// there. What is changed here is written to config.toml as it is changed.
+fn settings(_cx: &mut Context) {
+    job::dispatch_blocking(|_editor, compositor| {
+        compositor.push(Box::new(ui::settings::Settings::new()));
+    });
+}
+
 /// Ctrl-q: what can be written is written and the editor closes. What cannot — a buffer
 /// with no file — is a question, and it is asked in the middle of the screen.
 fn quit_saving(cx: &mut Context) {
     let unnamed = unsaveable(cx.editor);
     if unnamed.is_empty() {
-        cx.callback.push(Box::new(|_compositor, cx| {
-            run_typable(cx, "write-quit-all");
-        }));
+        let mut cx = compositor::Context {
+            editor: cx.editor,
+            jobs: cx.jobs,
+            scroll: None,
+        };
+        run_typable(&mut cx, "write-quit-all");
         return;
     }
 
-    let lines = vec![
-        format!(
-            "{} has changes and no file to write them to.",
-            unnamed.join(", ")
-        ),
-        "Everything else is saved.".to_string(),
-    ];
-    let answers = vec![
-        ui::confirm::Answer::new(
-            "Quit without saving",
-            Box::new(|cx: &mut compositor::Context| run_typable(cx, "quit-all!")),
-        )
-        .destructive(),
-        ui::confirm::Answer::new("Cancel", Box::new(|_| {})),
-    ];
-    let dialog = ui::confirm::Confirm::new("Unsaved changes", lines, answers);
+    // The dialog is built where it is pushed: what an answer carries cannot travel.
+    job::dispatch_blocking(move |_editor, compositor| {
+        let lines = vec![
+            format!(
+                "{} has changes and no file to write them to.",
+                unnamed.join(", ")
+            ),
+            "Everything else is saved.".to_string(),
+        ];
+        let answers = vec![
+            ui::confirm::Answer::new(
+                "Quit without saving",
+                Box::new(|cx: &mut compositor::Context| run_typable(cx, "quit-all!")),
+            )
+            .destructive(),
+            ui::confirm::Answer::new("Cancel", Box::new(|_| {})),
+        ];
 
-    cx.callback.push(Box::new(|compositor, _| {
-        compositor.push(Box::new(dialog));
-    }));
+        compositor.push(Box::new(ui::confirm::Confirm::new(
+            "Unsaved changes",
+            lines,
+            answers,
+        )));
+    });
 }
 
 fn markdown_preview_toggle(_cx: &mut Context) {

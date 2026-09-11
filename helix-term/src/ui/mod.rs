@@ -12,6 +12,7 @@ pub mod picker;
 pub mod popup;
 pub mod prompt;
 mod select;
+pub mod settings;
 pub mod sidebar;
 mod spinner;
 mod statusline;

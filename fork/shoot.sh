@@ -118,6 +118,15 @@ keys Enter
 keys z t
 shoot preview
 
+# The settings, opened by name so the picture does not depend on the terminal
+# forwarding Ctrl and a comma.
+start README.md
+keys Space '?'
+typed settings
+keys Enter
+keys Down Down Down
+shoot settings
+
 # What cannot be saved for you is asked about, in the middle of the screen.
 start README.md
 typed ":new"

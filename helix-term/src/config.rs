@@ -280,6 +280,7 @@ mod tests {
             assert_eq!(command_at(&config, mode, &["Cmd-c"]), "yank_to_clipboard");
             assert_eq!(command_at(&config, mode, &["C-s"]), "write");
             assert_eq!(command_at(&config, mode, &["C-q"]), "quit_saving");
+            assert_eq!(command_at(&config, mode, &["C-,"]), "settings");
             assert_eq!(command_at(&config, mode, &["Cmd-s"]), "write");
             assert_eq!(command_at(&config, mode, &["C-g"]), "goto_line_prompt");
             assert_eq!(command_at(&config, mode, &["C-f"]), "search_in_file");

@@ -88,6 +88,7 @@ serde = { version = "1.0", features = ["derive"] }
 dashmap = "6.2"
 
 parking_lot.workspace = true
+toml_edit = "0.25.15"
 
 [target.'cfg(windows)'.dependencies]
 crossterm = { version = "0.28", features = ["event-stream"] }

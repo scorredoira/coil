@@ -29,6 +29,7 @@ enable = true
 enable = false
 
 [keys.normal]
+"C-," = "settings"
 C-c = "yank_to_clipboard"
 backspace = "delete_selection_or_previous_char"
 del = "delete_selection_noyank"
@@ -50,6 +51,7 @@ S-F12 = "goto_reference"
 space = "global_search"
 
 [keys.select]
+"C-," = "settings"
 C-q = "quit_saving"
 C-c = "yank_to_clipboard"
 backspace = "delete_selection_or_previous_char"
@@ -64,6 +66,7 @@ A-z = ":toggle soft-wrap.enable"
 C-M = "markdown_preview_toggle"
 
 [keys.insert]
+"C-," = "settings"
 C-q = "quit_saving"
 Cmd-c = "yank_to_clipboard"
 C-a = "select_all"
