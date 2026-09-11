@@ -99,6 +99,18 @@ pub struct Sidebar {
     last_click: Option<(usize, Instant)>,
 }
 
+/// Whether a key is a shortcut of the editor's rather than one of the sidebar's. A key
+/// held with Ctrl, Alt or Cmd, and a function key, are shortcuts wherever the focus is;
+/// a plain letter is not, or it would run a command on the file behind the sidebar.
+fn is_editor_shortcut(key: KeyEvent) -> bool {
+    if matches!(key.code, KeyCode::F(_)) {
+        return true;
+    }
+
+    key.modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+}
+
 impl Sidebar {
     pub fn new(root: PathBuf, open: bool) -> Self {
         // A broken file costs the remembered width, not the sidebar.
@@ -444,6 +456,9 @@ impl Sidebar {
                 let target = self.prompt_target();
                 files::prompt_delete(cx, target);
             }
+            // Anything the sidebar does not use but the editor might: it goes through, so
+            // Ctrl-q quits and Ctrl-s saves wherever the focus is.
+            _ if is_editor_shortcut(key) => return EventResult::Ignored(None),
             _ => {}
         }
         if self.active().list().cursor != before {
@@ -698,4 +713,29 @@ fn save_width(width: u16) -> anyhow::Result<()> {
     std::fs::write(&temp, text).with_context(|| format!("writing {}", temp.display()))?;
     std::fs::rename(&temp, &path).with_context(|| format!("replacing {}", path.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(name: &str) -> KeyEvent {
+        name.parse().expect("a key of ours")
+    }
+
+    #[test]
+    fn the_editors_shortcuts_pass_through_the_sidebar() {
+        assert!(is_editor_shortcut(key("C-q")));
+        assert!(is_editor_shortcut(key("C-s")));
+        assert!(is_editor_shortcut(key("A-z")));
+        assert!(is_editor_shortcut(key("Cmd-s")));
+        assert!(is_editor_shortcut(key("F12")));
+
+        // What the sidebar reads as its own: plain keys, which would otherwise run a
+        // command on the file behind it.
+        assert!(!is_editor_shortcut(key("j")));
+        assert!(!is_editor_shortcut(key("i")));
+        assert!(!is_editor_shortcut(key("ret")));
+        assert!(!is_editor_shortcut(key("space")));
+    }
 }

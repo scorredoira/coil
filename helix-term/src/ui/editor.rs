@@ -1633,19 +1633,22 @@ impl Component for EditorView {
 
                 let mode = cx.editor.mode();
 
+                // A key the sidebar passes on is the editor's, and goes on to the keymap below.
                 if self.sidebar.focused && self.on_next_key.is_none() {
-                    self.sidebar.handle_key(key, &mut cx);
-                    // A prompt the sidebar opened rides on the callbacks, like a command's.
-                    let callbacks = take(&mut cx.callback);
-                    if callbacks.is_empty() {
-                        return EventResult::Consumed(None);
-                    }
-                    let callback: crate::compositor::Callback = Box::new(move |compositor, cx| {
-                        for callback in callbacks {
-                            callback(compositor, cx)
+                    if let EventResult::Consumed(_) = self.sidebar.handle_key(key, &mut cx) {
+                        // A prompt the sidebar opened rides on the callbacks, like a command's.
+                        let callbacks = take(&mut cx.callback);
+                        if callbacks.is_empty() {
+                            return EventResult::Consumed(None);
                         }
-                    });
-                    return EventResult::Consumed(Some(callback));
+                        let callback: crate::compositor::Callback =
+                            Box::new(move |compositor, cx| {
+                                for callback in callbacks {
+                                    callback(compositor, cx)
+                                }
+                            });
+                        return EventResult::Consumed(Some(callback));
+                    }
                 }
 
                 if !self.on_next_key(OnKeyCallbackKind::PseudoPending, &mut cx, key) {

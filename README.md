@@ -19,6 +19,9 @@ tree-sitter — and Coil follows its `master`.
 
 ## A sidebar file tree
 
+The editor's own keys — `Ctrl-q`, `Ctrl-s`, `F12` — work while the sidebar has
+the focus; only its plain keys are its own.
+
 `Space t` shows or hides it, `Space T` focuses it; started on a file
 (`coil foo.ts`), the editor opens without it. It follows the file you are
 editing, and inside it `j`/`k` move, `Enter` opens, `a` creates, `r` renames,
