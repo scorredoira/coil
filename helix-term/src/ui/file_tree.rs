@@ -1447,9 +1447,10 @@ impl FileTree {
         let theme = &editor.theme;
         let directory_style = theme.get("ui.text.directory");
         let text_style = theme.get("ui.text");
-        // Reversed like a picker's row, so it reads on a light theme and a dark one alike;
-        // without focus the bold current file is the only mark.
-        let selected_style = theme.get("ui.menu.selected");
+        // The selected row reads as a menu's selected item does: a theme may give that item
+        // only a background, one the tree's dimmed text barely shows on, so the menu's own
+        // text colour comes along. Without focus the bold current file is the only mark.
+        let selected_style = theme.get("ui.menu").patch(theme.get("ui.menu.selected"));
         let separator_style = theme.get("ui.window");
 
         let content_width = area.width.saturating_sub(1) as usize;
