@@ -64,17 +64,76 @@ pub enum Direction {
 pub struct Container {
     layout: Layout,
     children: Vec<ViewId>,
+    /// Each child's share of the container, in the order of `children`: a drag of the
+    /// separator between two of them moves weight from one to the other. Equal weights split
+    /// the container evenly, as helix always has.
+    weights: Vec<u32>,
     area: Rect,
 }
+
+/// The weight of a child in a container nobody has resized.
+const DEFAULT_WEIGHT: u32 = 1 << 16;
+
+/// The least a view keeps when a separator is dragged over it: its gutter and a few
+/// columns of text across, a couple of lines and its statusline down.
+const MIN_VIEW_WIDTH: u16 = 12;
+const MIN_VIEW_HEIGHT: u16 = 3;
 
 impl Container {
     pub fn new(layout: Layout) -> Self {
         Self {
             layout,
             children: Vec::new(),
+            weights: Vec::new(),
             area: Rect::default(),
         }
     }
+
+    /// Puts `child` at `pos` with the weight of the sibling it is split from, or the default
+    /// in an empty container: a container never resized stays evenly split, and one resized
+    /// keeps the proportions of the others.
+    fn insert_child(&mut self, pos: usize, child: ViewId, sibling: Option<usize>) {
+        let weight = sibling.map_or(DEFAULT_WEIGHT, |sibling| self.weights[sibling]);
+        self.children.insert(pos, child);
+        self.weights.insert(pos, weight);
+    }
+
+    /// Takes the child at `pos` out; the others share its room in proportion.
+    fn remove_child(&mut self, pos: usize) {
+        self.children.remove(pos);
+        self.weights.remove(pos);
+    }
+}
+
+/// The extent a container shares out among its children: its height when they are stacked,
+/// its width less the separators' columns when they sit side by side.
+fn shared_extent(container: &Container) -> u16 {
+    match container.layout {
+        Layout::Horizontal => container.area.height,
+        Layout::Vertical => {
+            let gaps = (container.children.len() as u16).saturating_sub(2);
+            container.area.width.saturating_sub(gaps)
+        }
+    }
+}
+
+fn total_weight(weights: &[u32]) -> u64 {
+    weights.iter().map(|&weight| u64::from(weight)).sum()
+}
+
+/// A child's part of `extent`: with equal weights, exactly the even split helix has always
+/// made, the rounding left to the last child.
+fn share(extent: u16, weight: u32, total: u64) -> u16 {
+    (u64::from(extent) * u64::from(weight) / total.max(1)) as u16
+}
+
+/// A boundary between two neighbouring children of a container, which a drag moves: the
+/// column between two views side by side, or the statusline of a view with another below.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Separator {
+    container: ViewId,
+    /// It sits after this child, before the next one.
+    index: usize,
 }
 
 impl Default for Container {
@@ -120,18 +179,19 @@ impl Tree {
         };
 
         // insert node after the current item if there is children already
-        let pos = if container.children.is_empty() {
-            0
+        let sibling = if container.children.is_empty() {
+            None
         } else {
             let pos = container
                 .children
                 .iter()
                 .position(|&child| child == focus)
                 .unwrap();
-            pos + 1
+            Some(pos)
         };
+        let pos = sibling.map_or(0, |sibling| sibling + 1);
 
-        container.children.insert(pos, node);
+        container.insert_child(pos, node, sibling);
         // focus the new node
         self.focus = node;
 
@@ -158,17 +218,18 @@ impl Tree {
         };
         if container.layout == layout {
             // insert node after the current item if there is children already
-            let pos = if container.children.is_empty() {
-                0
+            let sibling = if container.children.is_empty() {
+                None
             } else {
                 let pos = container
                     .children
                     .iter()
                     .position(|&child| child == focus)
                     .unwrap();
-                pos + 1
+                Some(pos)
             };
-            container.children.insert(pos, node);
+            let pos = sibling.map_or(0, |sibling| sibling + 1);
+            container.insert_child(pos, node, sibling);
             self.nodes[node].parent = parent;
         } else {
             let mut split = Node::container(layout);
@@ -182,8 +243,8 @@ impl Tree {
                 } => container,
                 _ => unreachable!(),
             };
-            container.children.push(focus);
-            container.children.push(node);
+            container.insert_child(0, focus, None);
+            container.insert_child(1, node, Some(0));
             self.nodes[focus].parent = split;
             self.nodes[node].parent = split;
 
@@ -243,7 +304,7 @@ impl Tree {
             container.children[pos] = new;
             self.nodes[new].parent = parent;
         } else {
-            container.children.remove(pos);
+            container.remove_child(pos);
         }
     }
 
@@ -262,7 +323,8 @@ impl Tree {
         if parent_container.children.len() == 1 && !parent_is_root {
             // Lets merge the only child back to its grandparent so that Views
             // are equally spaced.
-            let sibling = parent_container.children.pop().unwrap();
+            let sibling = parent_container.children[0];
+            parent_container.remove_child(0);
             self.remove_or_replace(parent, Some(sibling));
         }
 
@@ -382,12 +444,12 @@ impl Tree {
                     match container.layout {
                         Layout::Horizontal => {
                             let len = container.children.len();
-
-                            let height = area.height / len as u16;
+                            let total = total_weight(&container.weights);
 
                             let mut child_y = area.y;
 
                             for (i, child) in container.children.iter().enumerate() {
+                                let height = share(area.height, container.weights[i], total);
                                 let mut area = Rect::new(
                                     container.area.x,
                                     child_y,
@@ -407,17 +469,15 @@ impl Tree {
                         }
                         Layout::Vertical => {
                             let len = container.children.len();
-                            let len_u16 = len as u16;
 
                             let inner_gap = 1u16;
-                            let total_gap = inner_gap * len_u16.saturating_sub(2);
-
-                            let used_area = area.width.saturating_sub(total_gap);
-                            let width = used_area / len_u16;
+                            let used_area = shared_extent(container);
+                            let total = total_weight(&container.weights);
 
                             let mut child_x = area.x;
 
                             for (i, child) in container.children.iter().enumerate() {
+                                let width = share(used_area, container.weights[i], total);
                                 let mut area = Rect::new(
                                     child_x,
                                     container.area.y,
@@ -436,6 +496,128 @@ impl Tree {
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    /// The separator at a screen cell, if the cell is one: the column between two views side
+    /// by side, or the statusline of a view that has another below it.
+    pub fn separator_at(&self, row: u16, column: u16) -> Option<Separator> {
+        self.nodes.iter().find_map(|(key, node)| {
+            let Content::Container(container) = &node.content else {
+                return None;
+            };
+            let last = container.children.len().checked_sub(1)?;
+            (0..last).find_map(|index| {
+                let child = self.node_area(container.children[index]);
+                let hit = match container.layout {
+                    Layout::Vertical => {
+                        column == child.right()
+                            && row >= container.area.top()
+                            && row < container.area.bottom()
+                    }
+                    Layout::Horizontal => {
+                        row + 1 == child.bottom()
+                            && column >= child.left()
+                            && column < child.right()
+                    }
+                };
+                hit.then_some(Separator {
+                    container: key,
+                    index,
+                })
+            })
+        })
+    }
+
+    /// Moves a separator to the given cell, as far as leaves each side its smallest size.
+    /// Returns false when the separator is gone, the layout having changed under the drag.
+    pub fn drag_separator(&mut self, separator: Separator, row: u16, column: u16) -> bool {
+        let Some(Node {
+            content: Content::Container(container),
+            ..
+        }) = self.nodes.get(separator.container)
+        else {
+            return false;
+        };
+        if separator.index + 1 >= container.children.len() {
+            return false;
+        }
+        let layout = container.layout;
+        let extent = shared_extent(container);
+        let first = container.children[separator.index];
+        let second = container.children[separator.index + 1];
+        let before = self.node_area(first);
+        let after = self.node_area(second);
+
+        // How much room the two share, how much of it the first would take, and the least
+        // each needs, all along the container's own axis.
+        let (room, wanted, first_min, second_min) = match layout {
+            Layout::Vertical => (
+                after.right().saturating_sub(before.left()),
+                column.saturating_sub(before.left()),
+                self.min_extent(first, layout),
+                self.min_extent(second, layout),
+            ),
+            Layout::Horizontal => (
+                after.bottom().saturating_sub(before.top()),
+                (row + 1).saturating_sub(before.top()),
+                self.min_extent(first, layout),
+                self.min_extent(second, layout),
+            ),
+        };
+        // Side by side, the separator's own column sits between the two.
+        let gap = match layout {
+            Layout::Vertical => 1,
+            Layout::Horizontal => 0,
+        };
+        let most = room.saturating_sub(gap + second_min).max(first_min);
+        let taken = wanted.clamp(first_min, most);
+
+        // The weight whose share of the container, rounded down as `recalculate` rounds it,
+        // is exactly `taken`: the separator lands under the mouse, and the pair keeps its
+        // sum, so the children around it keep theirs.
+        let container = self.container_mut(separator.container);
+        let pair = container.weights[separator.index] + container.weights[separator.index + 1];
+        let total = total_weight(&container.weights);
+        let first_weight = (u64::from(taken) * total).div_ceil(u64::from(extent.max(1)));
+        let first_weight = first_weight.clamp(1, u64::from(pair - 1)) as u32;
+        container.weights[separator.index] = first_weight;
+        container.weights[separator.index + 1] = pair - first_weight;
+        self.recalculate();
+        true
+    }
+
+    fn node_area(&self, id: ViewId) -> Rect {
+        match &self.nodes[id].content {
+            Content::View(view) => view.area,
+            Content::Container(container) => container.area,
+        }
+    }
+
+    /// The least a node can be along `axis`: a view's minimum, the sum of its children's
+    /// for a container laid out along that axis, the largest of them for one across it.
+    fn min_extent(&self, id: ViewId, axis: Layout) -> u16 {
+        match &self.nodes[id].content {
+            Content::View(_) => match axis {
+                Layout::Vertical => MIN_VIEW_WIDTH,
+                Layout::Horizontal => MIN_VIEW_HEIGHT,
+            },
+            Content::Container(container) => {
+                let children = container
+                    .children
+                    .iter()
+                    .map(|&child| self.min_extent(child, axis));
+                if container.layout == axis {
+                    // Side by side, every view but the last is followed by its separator.
+                    let gaps = match axis {
+                        Layout::Vertical => container.children.len().saturating_sub(1) as u16,
+                        Layout::Horizontal => 0,
+                    };
+                    children.sum::<u16>() + gaps
+                } else {
+                    children.max().unwrap_or(0)
                 }
             }
         }
@@ -964,5 +1146,140 @@ mod test {
                 .map(|(view, _)| view.area.width)
                 .collect::<Vec<_>>()
         );
+    }
+
+    fn tree_with_views(width: u16, height: u16) -> Tree {
+        let mut tree = Tree::new(Rect::new(0, 0, width, height));
+        let mut view = View::new(DocumentId::default(), GutterConfig::default());
+        view.area = Rect::new(0, 0, width, height);
+        tree.insert(view);
+        tree
+    }
+
+    fn split_view(tree: &mut Tree, layout: Layout) -> ViewId {
+        let view = View::new(DocumentId::default(), GutterConfig::default());
+        tree.split(view, layout)
+    }
+
+    fn widths(tree: &Tree) -> Vec<u16> {
+        tree.traverse()
+            .map(|(id, _)| tree.get(id).area.width)
+            .collect()
+    }
+
+    fn heights(tree: &Tree) -> Vec<u16> {
+        tree.traverse()
+            .map(|(id, _)| tree.get(id).area.height)
+            .collect()
+    }
+
+    #[test]
+    fn dragging_a_vertical_separator_moves_it_to_the_mouse() {
+        let mut tree = tree_with_views(80, 24);
+        split_view(&mut tree, Layout::Vertical);
+        // The separator's column comes out of the last view.
+        assert_eq!(widths(&tree), vec![40, 39]);
+
+        let separator = tree
+            .separator_at(5, 40)
+            .expect("the column between the views");
+        assert_eq!(tree.separator_at(5, 39), None);
+        assert_eq!(tree.separator_at(5, 41), None);
+
+        assert!(tree.drag_separator(separator, 5, 25));
+        assert_eq!(widths(&tree), vec![25, 54]);
+        assert_eq!(tree.separator_at(5, 25), Some(separator));
+    }
+
+    #[test]
+    fn dragging_a_statusline_resizes_the_views_above_and_below() {
+        let mut tree = tree_with_views(80, 24);
+        split_view(&mut tree, Layout::Horizontal);
+        assert_eq!(heights(&tree), vec![12, 12]);
+
+        // The upper view's statusline is its last row.
+        let separator = tree.separator_at(11, 30).expect("the upper statusline");
+        assert_eq!(tree.separator_at(10, 30), None);
+
+        assert!(tree.drag_separator(separator, 7, 30));
+        assert_eq!(heights(&tree), vec![8, 16]);
+    }
+
+    #[test]
+    fn a_drag_leaves_each_side_its_smallest_size() {
+        let mut tree = tree_with_views(80, 24);
+        split_view(&mut tree, Layout::Vertical);
+        let separator = tree.separator_at(0, 40).unwrap();
+
+        tree.drag_separator(separator, 0, 0);
+        assert_eq!(widths(&tree)[0], MIN_VIEW_WIDTH);
+
+        tree.drag_separator(separator, 0, 79);
+        assert_eq!(widths(&tree)[1], MIN_VIEW_WIDTH);
+    }
+
+    #[test]
+    fn a_split_after_a_resize_weighs_the_new_view_as_the_one_it_splits() {
+        let mut tree = tree_with_views(100, 24);
+        let right = split_view(&mut tree, Layout::Vertical);
+        let separator = tree.separator_at(0, 50).unwrap();
+        tree.drag_separator(separator, 0, 75);
+        assert_eq!(widths(&tree), vec![75, 24]);
+
+        // Three to one, and the new view weighs as the right one: three to one to one.
+        tree.focus = right;
+        split_view(&mut tree, Layout::Vertical);
+        assert_eq!(widths(&tree), vec![59, 19, 20]);
+    }
+
+    #[test]
+    fn closing_a_view_gives_its_room_to_the_others() {
+        let mut tree = tree_with_views(90, 24);
+        let middle = split_view(&mut tree, Layout::Vertical);
+        split_view(&mut tree, Layout::Vertical);
+        let separator = tree.separator_at(0, widths(&tree)[0]).unwrap();
+        tree.drag_separator(separator, 0, 20);
+
+        tree.remove(middle);
+        assert_eq!(tree.views().count(), 2);
+        assert_eq!(widths(&tree).iter().sum::<u16>() + 1, 90);
+    }
+
+    #[test]
+    fn swapping_views_keeps_the_sizes_where_they_were() {
+        let mut tree = tree_with_views(80, 24);
+        let right = split_view(&mut tree, Layout::Vertical);
+        let separator = tree.separator_at(0, 40).unwrap();
+        tree.drag_separator(separator, 0, 60);
+        assert_eq!(widths(&tree), vec![60, 19]);
+
+        tree.focus = right;
+        tree.swap_split_in_direction(Direction::Left).unwrap();
+        tree.recalculate();
+        assert_eq!(widths(&tree), vec![60, 19]);
+    }
+
+    #[test]
+    fn a_nested_split_moves_only_its_own_boundary() {
+        let mut tree = tree_with_views(80, 24);
+        split_view(&mut tree, Layout::Vertical);
+        // The right view split in two, one above the other.
+        split_view(&mut tree, Layout::Horizontal);
+        assert_eq!(widths(&tree), vec![40, 39, 39]);
+
+        // The statusline of the upper right view moves that boundary, and nothing else.
+        let separator = tree
+            .separator_at(11, 60)
+            .expect("the upper right statusline");
+        assert_eq!(tree.separator_at(11, 20), None);
+        tree.drag_separator(separator, 5, 60);
+        assert_eq!(heights(&tree), vec![24, 6, 18]);
+        assert_eq!(widths(&tree), vec![40, 39, 39]);
+
+        // The column between the halves moves both right views together, and no further
+        // than leaves the right half its smallest.
+        let separator = tree.separator_at(3, 40).unwrap();
+        tree.drag_separator(separator, 3, 70);
+        assert_eq!(widths(&tree), vec![67, 12, 12]);
     }
 }

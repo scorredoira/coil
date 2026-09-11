@@ -29,8 +29,10 @@ as it is; this fork sits on top of its `master`.
 (`hx foo.ts`), the editor opens without it. It follows the file you are
 editing, and inside it `j`/`k` move, `Enter` opens, `a` creates, `r` renames,
 `d` deletes. A click opens a row, the wheel scrolls, and dragging the line
-between the tree and the editor resizes it: the width is remembered. Buffers
-are tabs you can click, each with a cross that closes it.
+between the tree and the editor resizes it: the width is remembered. Splits
+resize the same way, dragging the line between two side by side or the
+statusline between two stacked. Buffers are tabs you can click, each with a
+cross that closes it.
 
 ![The file tree beside two open files](fork/screenshots/tree.png)
 

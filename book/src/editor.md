@@ -31,7 +31,7 @@
 | Key | Description | Default |
 |--|--|---------|
 | `scrolloff` | Number of lines of padding around the edge of the screen when scrolling | `5` |
-| `mouse` | Enable mouse mode | `true` |
+| `mouse` | Enable mouse mode. Dragging the line between two splits side by side, or the statusline of a split with another below it, resizes them | `true` |
 | `mouse-yank-register` | Which register to use for mouse yanks. | `*` |
 | `middle-click-paste` | Middle click paste support | `true` |
 | `default-yank-register` | Default register used for yank/paste | `'"'` |

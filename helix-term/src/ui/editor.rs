@@ -30,6 +30,7 @@ use helix_view::{
     graphics::{Color, CursorKind, Modifier, Rect, Style},
     input::{KeyEvent, MouseButton, MouseEvent, MouseEventKind},
     keyboard::{KeyCode, KeyModifiers},
+    tree::Separator,
     Document, Editor, Theme, View,
 };
 use std::{mem::take, num::NonZeroUsize, ops, rc::Rc};
@@ -48,6 +49,8 @@ pub struct EditorView {
     pub(crate) file_tree: FileTree,
     /// The bufferline tabs of the last frame, so a click can land on one.
     bufferline_tabs: Vec<BufferlineTab>,
+    /// The split separator being dragged: the mouse is its until the button is let go.
+    dragged_separator: Option<Separator>,
 }
 
 struct BufferlineTab {
@@ -90,6 +93,7 @@ impl EditorView {
             terminal_focused: true,
             file_tree,
             bufferline_tabs: Vec::new(),
+            dragged_separator: None,
         }
     }
 
@@ -1298,6 +1302,30 @@ impl EditorView {
         // A drag of the tree's separator stays the tree's when the mouse leaves it.
         if self.file_tree.contains(row, column) || self.file_tree.resizing() {
             return self.file_tree.handle_mouse(event, cxt);
+        }
+
+        // A split separator is taken before the views see the press, and while it is dragged
+        // the mouse moves it instead of selecting text.
+        if let Some(separator) = self.dragged_separator {
+            match kind {
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    if !cxt.editor.tree.drag_separator(separator, row, column) {
+                        self.dragged_separator = None;
+                    }
+                    return EventResult::Consumed(None);
+                }
+                MouseEventKind::Up(MouseButton::Left) => {
+                    self.dragged_separator = None;
+                    return EventResult::Consumed(None);
+                }
+                _ => self.dragged_separator = None,
+            }
+        }
+        if kind == MouseEventKind::Down(MouseButton::Left) {
+            if let Some(separator) = cxt.editor.tree.separator_at(row, column) {
+                self.dragged_separator = Some(separator);
+                return EventResult::Consumed(None);
+            }
         }
 
         if kind == MouseEventKind::Down(MouseButton::Left) {
