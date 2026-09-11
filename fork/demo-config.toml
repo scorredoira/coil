@@ -1,0 +1,21 @@
+# The configuration the screenshots are taken with: how the editor looks, and
+# helix's own keys.
+theme = "github_dark"
+
+[editor]
+true-color = true
+mouse = true
+bufferline = "multiple"
+color-modes = true
+cursorline = false
+
+[editor.cursor-shape]
+insert = "bar"
+normal = "block"
+select = "underline"
+
+[editor.indent-guides]
+render = true
+
+[editor.soft-wrap]
+enable = true
