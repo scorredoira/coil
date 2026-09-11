@@ -27,6 +27,8 @@ enable = false
 
 [keys.normal]
 C-c = "yank_to_clipboard"
+backspace = "delete_selection_or_previous_char"
+del = "delete_selection_noyank"
 C-a = "select_all"
 Cmd-c = "yank_to_clipboard"
 C-s = ":write"
@@ -46,6 +48,8 @@ space = "global_search"
 
 [keys.select]
 C-c = "yank_to_clipboard"
+backspace = "delete_selection_or_previous_char"
+del = "delete_selection_noyank"
 C-a = "select_all"
 Cmd-c = "yank_to_clipboard"
 C-s = ":write"

@@ -402,6 +402,7 @@ impl MappableCommand {
         shrink_to_line_bounds, "Shrink selection to line bounds",
         delete_selection, "Delete selection",
         delete_selection_noyank, "Delete selection without yanking",
+        delete_selection_or_previous_char, "Delete the selection, or the character before a bare cursor",
         change_selection, "Change selection",
         change_selection_noyank, "Change selection without yanking",
         collapse_selection, "Collapse selection into single cursor",
@@ -3909,6 +3910,32 @@ fn delete_selection(cx: &mut Context) {
 
 fn delete_selection_noyank(cx: &mut Context) {
     delete_selection_impl(cx, Operation::Delete, YankAction::NoYank);
+}
+
+/// Backspace outside insert mode, as any editor has it: what is selected goes, and a
+/// bare cursor takes the character before it, as it would while typing.
+fn delete_selection_or_previous_char(cx: &mut Context) {
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+
+    // A cursor right after a selection must not reach back into what that one deletes.
+    let mut deleted_to = 0;
+    let transaction =
+        Transaction::delete_by_selection(doc.text(), doc.selection(view.id), |range| {
+            let bare = range.to() <= next_grapheme_boundary(text, range.from());
+            let from = if bare {
+                graphemes::prev_grapheme_boundary(text, range.from()).max(deleted_to)
+            } else {
+                range.from()
+            };
+            let to = if bare { range.from() } else { range.to() };
+            deleted_to = to;
+
+            (from, to)
+        });
+    doc.apply(&transaction, view.id);
+
+    exit_select_mode(cx);
 }
 
 fn change_selection(cx: &mut Context) {

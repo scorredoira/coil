@@ -98,6 +98,8 @@ you already know:
 | Key | Does |
 |---|---|
 | `Ctrl-a` | Select everything |
+| `Backspace` | Delete the selection, or the character before the cursor |
+| `Delete` | Delete the selection, or the character under the cursor |
 | `Ctrl-c` | Copy the selection to the system clipboard |
 | `Ctrl-s` | Save |
 | `Ctrl-f` | Search and replace in this file |

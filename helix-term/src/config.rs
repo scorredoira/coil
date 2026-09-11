@@ -262,8 +262,17 @@ mod tests {
             "global_search"
         );
 
-        assert_eq!(command_at(&config, Mode::Normal, &["C-a"]), "select_all");
-        assert_eq!(command_at(&config, Mode::Select, &["C-a"]), "select_all");
+        for mode in [Mode::Normal, Mode::Select] {
+            assert_eq!(command_at(&config, mode, &["C-a"]), "select_all");
+            assert_eq!(
+                command_at(&config, mode, &["backspace"]),
+                "delete_selection_or_previous_char"
+            );
+            assert_eq!(
+                command_at(&config, mode, &["del"]),
+                "delete_selection_noyank"
+            );
+        }
 
         for mode in [Mode::Normal, Mode::Select, Mode::Insert] {
             assert_eq!(command_at(&config, mode, &["Cmd-c"]), "yank_to_clipboard");

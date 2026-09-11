@@ -11,6 +11,7 @@ fn with_shortcuts() -> AppBuilder {
         keymap!({"Normal mode"
             "C-g" => goto_line_prompt,
             "C-f" => search_in_file,
+            "backspace" => delete_selection_or_previous_char,
         }),
     );
 
@@ -78,6 +79,42 @@ async fn search_in_file_replaces_in_this_buffer() -> anyhow::Result<()> {
             "<C-f>tenant<A-h><tab>account<A-a><esc>",
             "#[l|]#et account = 1;\nlet other = account;\n",
         ),
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn backspace_takes_the_character_before_a_bare_cursor() -> anyhow::Result<()> {
+    test_with_config(
+        with_shortcuts(),
+        ("hello #[w|]#orld", "<backspace>", "hello#[w|]#orld"),
+    )
+    .await?;
+
+    // At the very start there is nothing before it.
+    test_with_config(
+        with_shortcuts(),
+        ("#[h|]#ello", "<backspace>", "#[h|]#ello"),
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn backspace_deletes_what_is_selected() -> anyhow::Result<()> {
+    test_with_config(
+        with_shortcuts(),
+        ("#[hello|]# world", "<backspace>", "#[ |]#world"),
+    )
+    .await?;
+
+    // A selection and a cursor right after it: the cursor does not reach into it.
+    test_with_config(
+        with_shortcuts(),
+        ("#[ab|]##(c|)#d", "<backspace>", "#[c|]#d"),
     )
     .await?;
 
