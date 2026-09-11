@@ -175,3 +175,33 @@ async fn backspace_while_typing_takes_the_selection_whole() -> anyhow::Result<()
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn leaving_a_file_saves_it() -> anyhow::Result<()> {
+    let mut file = tempfile::NamedTempFile::new()?;
+    let other = tempfile::NamedTempFile::new()?;
+    let mut config = helpers::test_config();
+    config.editor.auto_save.focus_lost = true;
+
+    let mut app = helpers::AppBuilder::new()
+        .with_config(config)
+        .with_file(file.path(), None)
+        .build()?;
+
+    // Typed into the first file, then away to the second one.
+    test_key_sequence(
+        &mut app,
+        Some(&format!(
+            "ihello<esc>:open {}<ret>",
+            other.path().to_string_lossy()
+        )),
+        None,
+        false,
+    )
+    .await?;
+
+    helpers::run_event_loop_until_idle(&mut app).await;
+    helpers::assert_file_has_content(&mut file, "hello")?;
+
+    Ok(())
+}

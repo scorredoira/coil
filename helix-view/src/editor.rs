@@ -1035,7 +1035,8 @@ pub struct AutoSave {
     /// Auto save after a delay in milliseconds. Defaults to disabled.
     #[serde(default)]
     pub after_delay: AutoSaveAfterDelay,
-    /// Auto save on focus lost. Defaults to false.
+    /// Auto save when the file stops being the one in front of you: the terminal loses
+    /// focus, or another file does. Defaults to false.
     #[serde(default)]
     pub focus_lost: bool,
 }
@@ -1989,6 +1990,8 @@ impl Editor {
 
                 let (view, doc) = current!(self);
                 let view_id = view.id;
+                // The document being LEFT, which is what the event below is about.
+                let previous = doc.id;
 
                 // Append any outstanding changes to history in the old document.
                 doc.append_changes_to_history(view);
@@ -2022,7 +2025,7 @@ impl Editor {
 
                 dispatch(DocumentFocusLost {
                     editor: self,
-                    doc: id,
+                    doc: previous,
                 });
                 return;
             }

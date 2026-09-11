@@ -240,6 +240,8 @@ mod tests {
 
         assert_eq!(config.editor.soft_wrap.enable, Some(true));
         assert!(!config.editor.file_picker.git_ignore);
+        assert!(config.editor.auto_save.focus_lost);
+        assert!(!config.editor.auto_save.after_delay.enable);
         assert!(matches!(config.theme, Some(theme::Config::Adaptive { .. })));
         assert_eq!(
             command_at(&config, Mode::Normal, &["C-c"]),

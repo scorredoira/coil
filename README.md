@@ -122,6 +122,10 @@ replaces it and `Backspace` or `Delete` removes it. None of that leaves insert
 mode, and none of it touches how selections work outside it, where they are what
 the commands act on.
 
+Your work is saved for you: leave a file — another tab, another window, or the
+terminal itself losing focus — and it is written to disk. Saving while you type
+(`auto-save.after-delay`) stays off.
+
 And the editor starts the way you would set it up: long lines wrap,
 indentation guides show, open files are tabs, the cursor is a bar while
 typing, the mode colours the status line, the theme follows the terminal's

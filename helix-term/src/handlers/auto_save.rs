@@ -12,9 +12,9 @@ use arc_swap::access::Access;
 use helix_event::{register_hook, send_blocking};
 use helix_view::{
     document::Mode,
-    events::DocumentDidChange,
+    events::{DocumentDidChange, DocumentFocusLost},
     handlers::{AutoSaveEvent, Handlers},
-    Editor,
+    DocumentId, Editor,
 };
 use tokio::time::Instant;
 
@@ -99,7 +99,32 @@ fn request_auto_save(editor: &mut Editor) {
     }
 }
 
+/// A file you have moved away from is saved, the way leaving the terminal saves it: the
+/// tab you left would otherwise be the only place your work lives.
+fn save_on_leaving(editor: &mut Editor, doc: DocumentId) {
+    if !editor.config().auto_save.focus_lost {
+        return;
+    }
+
+    // A file being closed is gone by now, and one never written has nowhere to go.
+    let Some(document) = editor.document(doc) else {
+        return;
+    };
+    if !document.is_modified() || document.path().is_none() {
+        return;
+    }
+
+    if let Err(err) = editor.save::<std::path::PathBuf>(doc, None, false) {
+        editor.set_error(format!("Could not save: {err}"));
+    }
+}
+
 pub(super) fn register_hooks(handlers: &Handlers) {
+    register_hook!(move |event: &mut DocumentFocusLost<'_>| {
+        save_on_leaving(event.editor, event.doc);
+        Ok(())
+    });
+
     let tx = handlers.auto_save.clone();
     register_hook!(move |event: &mut DocumentDidChange<'_>| {
         let config = event.doc.config.load();
