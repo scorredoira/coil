@@ -7,7 +7,7 @@ use crate::{
     keymap::{KeymapResult, Keymaps},
     ui::{
         document::{render_document, LinePos, TextRenderer},
-        file_tree::FileTree,
+        file_tree::{self, FileTree},
         statusline,
         text_decorations::{self, Decoration, DecorationManager, InlineDiagnostics},
         Completion, ProgressSpinners,
@@ -1295,7 +1295,8 @@ impl EditorView {
             ..
         } = *event;
 
-        if self.file_tree.contains(row, column) {
+        // A drag of the tree's separator stays the tree's when the mouse leaves it.
+        if self.file_tree.contains(row, column) || self.file_tree.resizing() {
             return self.file_tree.handle_mouse(event, cxt);
         }
 
@@ -1743,7 +1744,10 @@ impl Component for EditorView {
         // -1 for commandline and the bufferline's rows
         let mut editor_area = area.clip_bottom(1);
         if self.file_tree.open {
-            let tree_width = config.file_tree.width.min(area.width.saturating_sub(20));
+            let tree_width = self
+                .file_tree
+                .width(config.file_tree.width)
+                .min(area.width.saturating_sub(file_tree::EDITOR_ROOM));
             let tree_area = editor_area.with_width(tree_width);
             self.file_tree.render(tree_area, surface, cx.editor);
             editor_area = editor_area.clip_left(tree_width);

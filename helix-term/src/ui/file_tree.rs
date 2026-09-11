@@ -15,6 +15,8 @@ use tui::buffer::Buffer as Surface;
 
 use std::borrow::Cow;
 
+use anyhow::Context as _;
+
 use crate::commands;
 use crate::compositor::{self, EventResult};
 use crate::job::Callback;
@@ -55,6 +57,13 @@ pub struct FileTree {
     preview_pending: Option<Receiver<DiffAnswer>>,
     /// Where each tab's label was drawn on the header line, for a click to land on.
     tab_columns: [(u16, u16); 3],
+    /// The width the separator was dragged to, kept between sessions over the configured one.
+    width: Option<u16>,
+    /// Whether the separator is being dragged, so the mouse is the tree's wherever it goes.
+    resizing: bool,
+    /// Why the remembered width could not be read, said on the first render: at startup the
+    /// editor's own messages would cover it.
+    width_error: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -83,6 +92,12 @@ const CHANGES_REFRESH: Duration = Duration::from_secs(2);
 
 /// How many commits one `git log` reads; the cursor nearing the end reads the next page.
 const COMMITS_PAGE: usize = 200;
+
+/// The narrowest the separator can be dragged to.
+const MIN_WIDTH: u16 = 12;
+
+/// The columns the tree always leaves to the editor, however wide it is asked to be.
+pub const EDITOR_ROOM: u16 = 20;
 
 struct Row {
     path: PathBuf,
@@ -159,6 +174,15 @@ impl Row {
 
 impl FileTree {
     pub fn new(root: PathBuf, open: bool) -> Self {
+        // A broken file costs the remembered width, not the tree.
+        let (width, width_error) = match load_width() {
+            Ok(width) => (width, None),
+            Err(err) => {
+                log::error!("Could not read the file tree's width: {err:#}");
+                let message = format!("Could not read the file tree's width: {err:#}");
+                (None, Some(message))
+            }
+        };
         Self {
             root,
             expanded: HashSet::new(),
@@ -184,7 +208,19 @@ impl FileTree {
             previewed: None,
             preview_pending: None,
             tab_columns: [(0, 0); 3],
+            width,
+            resizing: false,
+            width_error,
         }
+    }
+
+    /// The tree's width: the one the separator was dragged to, else the configured one.
+    pub fn width(&self, configured: u16) -> u16 {
+        self.width.unwrap_or(configured)
+    }
+
+    pub fn resizing(&self) -> bool {
+        self.resizing
     }
 
     pub fn toggle(&mut self) {
@@ -1163,7 +1199,29 @@ impl FileTree {
 
     pub fn handle_mouse(&mut self, event: &MouseEvent, cx: &mut commands::Context) -> EventResult {
         let editor = &mut cx.editor;
+        let separator = self.area.right().saturating_sub(1);
         match event.kind {
+            MouseEventKind::Down(MouseButton::Left) if event.column == separator => {
+                self.resizing = true;
+            }
+            MouseEventKind::Drag(MouseButton::Left) if self.resizing => {
+                // The separator is the tree's last column, so it lands where the mouse is.
+                let total = self.area.width + editor.tree.area().width;
+                let most = total.saturating_sub(EDITOR_ROOM).max(MIN_WIDTH);
+                let wanted = event.column.saturating_sub(self.area.x) + 1;
+                self.width = Some(wanted.clamp(MIN_WIDTH, most));
+            }
+            MouseEventKind::Up(MouseButton::Left) if self.resizing => {
+                self.resizing = false;
+                if let Some(width) = self.width {
+                    if let Err(err) = save_width(width) {
+                        log::error!("Could not remember the file tree's width: {err:#}");
+                        editor.set_error(format!(
+                            "Could not remember the file tree's width: {err:#}"
+                        ));
+                    }
+                }
+            }
             MouseEventKind::Down(MouseButton::Left) => {
                 self.focused = true;
                 // The first line holds the tabs, not a row.
@@ -1207,6 +1265,9 @@ impl FileTree {
     }
 
     pub fn render(&mut self, area: Rect, surface: &mut Surface, editor: &mut Editor) {
+        if let Some(err) = self.width_error.take() {
+            editor.set_error(err);
+        }
         self.area = area;
         self.page = area.height.saturating_sub(1).max(1) as usize;
 
@@ -1642,6 +1703,42 @@ fn format_age(time: i64) -> String {
         s => (s / YEAR, "y"),
     };
     format!("{amount}{unit}")
+}
+
+/// What the tree remembers between sessions.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TreeState {
+    width: u16,
+}
+
+fn tree_state_file() -> PathBuf {
+    helix_loader::data_dir().join("file-tree.toml")
+}
+
+/// The width the separator was last dragged to; none before it ever was.
+fn load_width() -> anyhow::Result<Option<u16>> {
+    let path = tree_state_file();
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
+    };
+    let state: TreeState =
+        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    Ok(Some(state.width))
+}
+
+/// Written aside and renamed over, so another helix reading it never sees half.
+fn save_width(width: u16) -> anyhow::Result<()> {
+    let path = tree_state_file();
+    let dir = helix_loader::data_dir();
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+
+    let text = toml::to_string(&TreeState { width })?;
+    let temp = dir.join(format!(".file-tree.{}.toml", std::process::id()));
+    std::fs::write(&temp, text).with_context(|| format!("writing {}", temp.display()))?;
+    std::fs::rename(&temp, &path).with_context(|| format!("replacing {}", path.display()))?;
+    Ok(())
 }
 
 fn run_git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
