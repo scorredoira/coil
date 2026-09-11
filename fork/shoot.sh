@@ -90,7 +90,7 @@ keys Space B
 shoot blame 2
 
 start helix-term/src/ui/editor.rs
-keys Space /
+keys Space Space
 typed set_status
 keys M-h M-i
 keys Tab

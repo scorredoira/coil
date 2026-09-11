@@ -1,0 +1,40 @@
+# Coil's defaults: the editor as it should be the moment it is installed.
+# The user's config.toml is laid over this, so any of it can still be changed.
+# No arrays here: the merge would append the user's items to them, not replace.
+
+theme = { light = "github_light", dark = "github_dark" }
+
+[editor]
+bufferline = "multiple"
+color-modes = true
+
+[editor.file-picker]
+git-ignore = false
+
+[editor.cursor-shape]
+insert = "bar"
+normal = "block"
+select = "underline"
+
+[editor.indent-guides]
+render = true
+
+[editor.soft-wrap]
+enable = true
+
+[editor.word-completion]
+enable = false
+
+[keys.normal]
+C-c = "yank_to_clipboard"
+C-q = ":quit-all"
+F2 = "rename_symbol"
+F8 = "goto_next_diag"
+F12 = "goto_definition"
+S-F12 = "goto_reference"
+
+[keys.normal.space]
+space = "global_search"
+
+[keys.select]
+C-c = "yank_to_clipboard"

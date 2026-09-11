@@ -54,11 +54,11 @@ commit; press it again to open that commit in the sidebar.
 
 ## Search and replace across the project
 
-`Space /` opens a panel with a replace box and include/exclude filters (the
-filters are remembered), switches for case, whole word, regex and preserving
-case — the panel's border says their keys — and each result shows the line it
-matched. `Alt-a` replaces every match on screen: the files are changed but
-left unsaved, and one undo takes it back.
+`Space Space` (or `Space /`) opens a panel with a replace box and
+include/exclude filters (the filters are remembered), switches for case, whole
+word, regex and preserving case — the panel's border says their keys — and
+each result shows the line it matched. `Alt-a` replaces every match on
+screen: the files are changed but left unsaved, and one undo takes it back.
 
 ![The search panel with replace and filters](fork/screenshots/search.png)
 
@@ -71,11 +71,39 @@ opens it.
 
 ![Two files side by side, each a tab you can click](fork/screenshots/splits.png)
 
+## Ready as installed
+
+Coil needs no configuration file. On top of Helix's keys it brings the ones
+you already know:
+
+| Key | Does |
+|---|---|
+| `Ctrl-c` | Copy the selection to the system clipboard |
+| `F12` / `Shift-F12` | Go to the definition / to the references |
+| `F2` | Rename the symbol |
+| `F8` | Next diagnostic |
+| `Ctrl-q` | Quit |
+| `Space Space` | Search and replace across the project (`Space /` too) |
+
+And the editor starts the way you would set it up: long lines wrap,
+indentation guides show, open files are tabs, the cursor is a bar while
+typing, the mode colours the status line, the theme follows the terminal's
+light or dark background, the file picker shows ignored files too, and
+completion offers only what the language server suggests.
+
+Any of it can be changed in `~/.config/coil/config.toml`, which is laid over
+these defaults: write only what you want different.
+
+Copying over SSH reaches your own machine's clipboard when the terminal
+supports OSC 52: Ghostty, kitty and WezTerm do, iTerm2 once it is allowed in
+its settings.
+
 ## Coming from Helix
 
 The keys are Helix's, and so is its documentation:
-[docs.helix-editor.com](https://docs.helix-editor.com/) applies as it is.
-Coil keeps its own files, so the two never mix:
+[docs.helix-editor.com](https://docs.helix-editor.com/) applies as it is —
+except that `Ctrl-c` copies (comment with `Space c`). Coil keeps its own
+files, so the two never mix:
 
 | | Helix | Coil |
 |---|---|---|

@@ -118,8 +118,13 @@ impl Config {
     }
 
     pub fn load_default() -> Result<Config, ConfigLoadError> {
-        let global_config =
-            fs::read_to_string(helix_loader::config_file()).map_err(ConfigLoadError::Error)?;
+        // No config.toml is not an error: Coil's defaults are a configuration of their own.
+        let user_config = match fs::read_to_string(helix_loader::config_file()) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(err) => return Err(ConfigLoadError::Error(err)),
+        };
+        let global_config = over_defaults(&user_config)?;
         let local_config = fs::read_to_string(helix_loader::workspace_config_file())
             .map_err(ConfigLoadError::Error);
 
@@ -149,6 +154,17 @@ impl Config {
             Ok(global_parsed)
         }
     }
+}
+
+/// Coil's defaults, which the user's config.toml is laid over.
+const DEFAULTS: &str = include_str!("defaults.toml");
+
+/// The user's config.toml laid over Coil's defaults, as the text `Config::load` reads.
+fn over_defaults(user: &str) -> Result<String, ConfigLoadError> {
+    let defaults: toml::Value = toml::from_str(DEFAULTS).expect("defaults.toml is valid TOML");
+    let user: toml::Value = toml::from_str(user).map_err(ConfigLoadError::BadConfig)?;
+    let merged = merge_toml_values(defaults, user, usize::MAX);
+    Ok(toml::to_string(&merged).expect("a TOML value serializes"))
 }
 
 #[cfg(test)]
@@ -208,5 +224,64 @@ mod tests {
         // From the Default trait
         let default_keys = Config::default().keys;
         assert_eq!(default_keys, keymap::default());
+    }
+
+    fn command_at(config: &Config, mode: Mode, keys: &[&str]) -> String {
+        let keys: Vec<_> = keys.iter().map(|key| key.parse().unwrap()).collect();
+        match config.keys[&mode].search(&keys) {
+            Some(KeyTrie::MappableCommand(command)) => command.name().to_owned(),
+            other => panic!("{keys:?} is not one command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn with_no_config_file_the_defaults_are_coils() {
+        let config = Config::load_test(&over_defaults("").unwrap());
+
+        assert_eq!(config.editor.soft_wrap.enable, Some(true));
+        assert!(!config.editor.file_picker.git_ignore);
+        assert!(matches!(config.theme, Some(theme::Config::Adaptive { .. })));
+        assert_eq!(command_at(&config, Mode::Normal, &["C-c"]), "yank_to_clipboard");
+        assert_eq!(command_at(&config, Mode::Select, &["C-c"]), "yank_to_clipboard");
+        assert_eq!(command_at(&config, Mode::Normal, &["F12"]), "goto_definition");
+        assert_eq!(command_at(&config, Mode::Normal, &["space", "space"]), "global_search");
+        assert_eq!(command_at(&config, Mode::Normal, &["space", "/"]), "global_search");
+    }
+
+    #[test]
+    fn the_users_config_wins_over_the_defaults() {
+        let user = r#"
+            theme = "base16_default"
+
+            [editor.soft-wrap]
+            enable = false
+
+            [keys.normal]
+            C-c = "toggle_comments"
+
+            [keys.normal.space]
+            x = "file_picker"
+        "#;
+        let config = Config::load_test(&over_defaults(user).unwrap());
+
+        assert_eq!(config.editor.soft_wrap.enable, Some(false));
+        assert_eq!(
+            config.theme,
+            Some(theme::Config::Constant("base16_default".into()))
+        );
+        assert_eq!(command_at(&config, Mode::Normal, &["C-c"]), "toggle_comments");
+        assert_eq!(command_at(&config, Mode::Normal, &["space", "x"]), "file_picker");
+        // A key the user added under space leaves Coil's others there.
+        assert_eq!(command_at(&config, Mode::Normal, &["space", "space"]), "global_search");
+        // And what neither names stays Coil's.
+        assert!(!config.editor.file_picker.git_ignore);
+    }
+
+    #[test]
+    fn a_broken_config_file_is_an_error_not_the_defaults() {
+        assert!(matches!(
+            over_defaults("[editor"),
+            Err(ConfigLoadError::BadConfig(_))
+        ));
     }
 }

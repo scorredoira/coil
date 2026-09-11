@@ -1,21 +1,3 @@
-# The configuration the screenshots are taken with: how the editor looks, and
-# helix's own keys.
+# The configuration the screenshots are taken with, laid over Coil's defaults:
+# one fixed theme, so the pictures do not follow the terminal's background.
 theme = "github_dark"
-
-[editor]
-true-color = true
-mouse = true
-bufferline = "multiple"
-color-modes = true
-cursorline = false
-
-[editor.cursor-shape]
-insert = "bar"
-normal = "block"
-select = "underline"
-
-[editor.indent-guides]
-render = true
-
-[editor.soft-wrap]
-enable = true
