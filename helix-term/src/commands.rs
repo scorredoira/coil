@@ -415,6 +415,8 @@ impl MappableCommand {
         file_explorer_in_current_directory, "Open file explorer at current working directory",
         file_tree_focus, "Focus the file tree, opening it if closed",
         file_tree_toggle, "Show or hide the file tree",
+        file_history, "Show the history of the current file in the file tree",
+        blame_line, "Show who last changed the current line; again opens that commit",
         code_action, "Perform code action",
         buffer_picker, "Open buffer picker",
         jumplist_picker, "Open jumplist picker",
@@ -3983,6 +3985,36 @@ fn file_tree_toggle(cx: &mut Context) {
     cx.callback.push(Box::new(|compositor, _cx| {
         let editor_view = compositor.find::<ui::EditorView>().unwrap();
         editor_view.file_tree.toggle();
+    }));
+}
+
+fn file_history(cx: &mut Context) {
+    let Some(path) = doc!(cx.editor).path().map(Path::to_path_buf) else {
+        cx.editor
+            .set_error("The buffer has no file to show the history of");
+        return;
+    };
+    cx.callback.push(Box::new(move |compositor, cx| {
+        let editor_view = compositor.find::<ui::EditorView>().unwrap();
+        editor_view.file_tree.show_history(cx.editor, path);
+    }));
+}
+
+fn blame_line(cx: &mut Context) {
+    let (view, doc) = current_ref!(cx.editor);
+    let Some(path) = doc.path().map(Path::to_path_buf) else {
+        cx.editor.set_error("The buffer has no file to blame");
+        return;
+    };
+    let text = doc.text().slice(..);
+    let request = ui::file_tree::BlameRequest {
+        path,
+        line: doc.selection(view.id).primary().cursor_line(text),
+        contents: text.to_string(),
+    };
+    cx.callback.push(Box::new(move |compositor, cx| {
+        let editor_view = compositor.find::<ui::EditorView>().unwrap();
+        editor_view.file_tree.blame(cx, request);
     }));
 }
 

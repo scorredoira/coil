@@ -105,6 +105,8 @@
 | `file_explorer_in_current_directory` | Open file explorer at current working directory |  |
 | `file_tree_focus` | Focus the file tree, opening it if closed | normal: `` <space>T ``, select: `` <space>T `` |
 | `file_tree_toggle` | Show or hide the file tree | normal: `` <space>t ``, select: `` <space>t `` |
+| `file_history` | Show the history of the current file in the file tree | normal: `` <space>H ``, select: `` <space>H `` |
+| `blame_line` | Show who last changed the current line; again opens that commit | normal: `` <space>B ``, select: `` <space>B `` |
 | `code_action` | Perform code action | normal: `` <space>a ``, select: `` <space>a `` |
 | `buffer_picker` | Open buffer picker | normal: `` <space>b ``, select: `` <space>b `` |
 | `jumplist_picker` | Open jumplist picker | normal: `` <space>j ``, select: `` <space>j `` |

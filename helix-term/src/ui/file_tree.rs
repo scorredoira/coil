@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -48,8 +49,12 @@ pub struct FileTree {
     commits_complete: bool,
     commits_pending: Option<Receiver<CommitsPage>>,
     commits_queried_at: Option<Instant>,
+    /// The file whose history the Commits tab lists in place of the whole repository's.
+    history_of: Option<PathBuf>,
     /// The commit whose files the Commits tab lists in place of the history.
     opened: Option<OpenCommit>,
+    /// The line blamed last, so blaming it again opens its commit.
+    blamed: Option<Blamed>,
     /// The scratch buffer the diffs are shown in, reused for as long as it lives.
     diff_doc: Option<DocumentId>,
     /// What the diff buffer was last asked to show, so it is asked again only when that moves.
@@ -129,6 +134,25 @@ struct Commit {
     short: String,
     time: i64,
     subject: String,
+    /// The file the commit was reached by (a file's history, a blame), relative to the
+    /// repository's top and named as it was in that commit.
+    file: Option<String>,
+}
+
+/// A line to blame: the buffer's file, its line from 0, and the buffer's text, which is what
+/// the line numbers count.
+pub struct BlameRequest {
+    pub path: PathBuf,
+    pub line: usize,
+    pub contents: String,
+}
+
+/// Who last changed a line, and in which commit; no commit when the change is not committed.
+struct Blamed {
+    path: PathBuf,
+    line: usize,
+    author: String,
+    commit: Option<Commit>,
 }
 
 /// One page of history as `git log` answered it, and where in the history it starts.
@@ -203,7 +227,9 @@ impl FileTree {
             commits_complete: false,
             commits_pending: None,
             commits_queried_at: None,
+            history_of: None,
             opened: None,
+            blamed: None,
             diff_doc: None,
             previewed: None,
             preview_pending: None,
@@ -431,9 +457,12 @@ impl FileTree {
 
     fn switch_tab(&mut self, tab: Tab, editor: &mut Editor) {
         if self.tab == tab {
-            // Asking for the Commits tab from inside a commit goes back to the history.
-            if tab == Tab::Commits {
+            // Asking for the Commits tab again steps back: out of a commit, then out of a
+            // file's history into the whole one.
+            if tab == Tab::Commits && self.opened.is_some() {
                 self.leave_commit(editor);
+            } else if tab == Tab::Commits && self.history_of.is_some() {
+                self.leave_history(editor);
             }
             return;
         }
@@ -454,6 +483,13 @@ impl FileTree {
         let Some(commit) = commits.get(index).cloned() else {
             return;
         };
+        self.open_commit(editor, commit);
+    }
+
+    /// Lists the files of `commit` in the Commits tab, the cursor on the file the commit was
+    /// reached by when it carries one. From anywhere but the history list, the list is left
+    /// on the commit's own place in it.
+    fn open_commit(&mut self, editor: &mut Editor, commit: Commit) {
         let (prefix, files) = match query_commit_files(&self.root, &commit.hash) {
             Ok(answer) => answer,
             Err(err) => {
@@ -461,17 +497,119 @@ impl FileTree {
                 return;
             }
         };
+        let target = commit
+            .file
+            .as_deref()
+            .and_then(|file| file.strip_prefix(prefix.as_str()))
+            .map(|inside| self.root.join(inside));
+        let from_list = self.tab == Tab::Commits && self.opened.is_none();
+        let (list_cursor, list_scroll) = if from_list {
+            (self.cursor, self.scroll)
+        } else {
+            (0, 0)
+        };
+        self.previewed = None;
+        self.preview_pending = None;
+        if self.tab != Tab::Commits {
+            self.tab = Tab::Commits;
+            self.revealed = None;
+        }
         self.opened = Some(OpenCommit {
             commit,
             prefix,
             files,
             collapsed: HashSet::new(),
-            list_cursor: self.cursor,
-            list_scroll: self.scroll,
+            list_cursor,
+            list_scroll,
         });
         self.cursor = 0;
         self.scroll = 0;
         self.rebuild(editor);
+        if let Some(target) = target {
+            self.select(&target);
+            self.center_cursor();
+        }
+    }
+
+    /// Shows the history of one file in the Commits tab, focused, in place of the whole one.
+    pub fn show_history(&mut self, editor: &mut Editor, path: PathBuf) {
+        if !path.starts_with(&self.root) {
+            editor.set_error(format!("{} is outside the workspace", path.display()));
+            return;
+        }
+        self.opened = None;
+        self.previewed = None;
+        self.preview_pending = None;
+        self.set_history(Some(path));
+        self.tab = Tab::Commits;
+        self.revealed = None;
+        self.open = true;
+        self.focused = true;
+        self.rebuild(editor);
+    }
+
+    fn leave_history(&mut self, editor: &mut Editor) {
+        self.set_history(None);
+        self.rebuild(editor);
+    }
+
+    /// Sets whose history the Commits tab lists: a file's, or the whole repository's with
+    /// none. What was read of the other is dropped, along with any read still under way.
+    fn set_history(&mut self, history: Option<PathBuf>) {
+        self.history_of = history;
+        self.commits = None;
+        self.commits_complete = false;
+        self.commits_pending = None;
+        self.commits_queried_at = None;
+        self.cursor = 0;
+        self.scroll = 0;
+    }
+
+    /// Says who last changed the requested line, in the status line. Blaming the line blamed
+    /// last opens its commit instead, focused, the cursor on the file.
+    pub fn blame(&mut self, cx: &mut compositor::Context, request: BlameRequest) {
+        let again = self
+            .blamed
+            .as_ref()
+            .filter(|blamed| blamed.path == request.path && blamed.line == request.line);
+        if let Some(blamed) = again {
+            let Some(commit) = blamed.commit.clone() else {
+                cx.editor.set_status("Not committed yet");
+                return;
+            };
+            self.open = true;
+            self.focused = true;
+            self.open_commit(cx.editor, commit);
+            return;
+        }
+        let root = self.root.clone();
+        let callback = Box::pin(async move {
+            let answer = tokio::task::spawn_blocking(move || query_blame(&root, &request)).await?;
+            let call: Callback = Callback::EditorCompositor(Box::new(move |editor, compositor| {
+                let blamed = match answer {
+                    Ok(blamed) => blamed,
+                    Err(err) => {
+                        editor.set_error(err);
+                        return;
+                    }
+                };
+                match &blamed.commit {
+                    Some(commit) => editor.set_status(format!(
+                        "{} · {} · {} ago · {} (blame again to open it)",
+                        commit.short,
+                        blamed.author,
+                        format_age(commit.time),
+                        commit.subject
+                    )),
+                    None => editor.set_status("Not committed yet"),
+                }
+                if let Some(view) = compositor.find::<EditorView>() {
+                    view.file_tree.blamed = Some(blamed);
+                }
+            }));
+            Ok(call)
+        });
+        cx.jobs.callback(callback);
     }
 
     fn leave_commit(&mut self, editor: &mut Editor) {
@@ -565,9 +703,10 @@ impl FileTree {
             }
             _ => None,
         };
+        // A file's history is read whole, too much to read again every two seconds: R asks.
         let stale = self
             .commits_queried_at
-            .is_none_or(|at| at.elapsed() >= CHANGES_REFRESH);
+            .is_none_or(|at| self.history_of.is_none() && at.elapsed() >= CHANGES_REFRESH);
         let skip = match next_page {
             Some(skip) => skip,
             None if stale => {
@@ -578,8 +717,13 @@ impl FileTree {
         };
         let (sender, receiver) = mpsc::channel();
         let root = self.root.clone();
+        let history = self
+            .history_of
+            .as_ref()
+            .and_then(|path| path.strip_prefix(&self.root).ok())
+            .map(Path::to_path_buf);
         std::thread::spawn(move || {
-            let answer = query_commits(&root, skip);
+            let answer = query_commits(&root, skip, history.as_deref());
             if sender.send(CommitsPage { skip, answer }).is_err() {
                 return;
             }
@@ -603,7 +747,7 @@ impl FileTree {
                 return true;
             }
         };
-        let complete = commits.len() < COMMITS_PAGE;
+        let complete = self.history_of.is_some() || commits.len() < COMMITS_PAGE;
         if page.skip > 0 {
             let Some(Ok(held)) = &mut self.commits else {
                 return false;
@@ -953,6 +1097,8 @@ impl FileTree {
             (KeyCode::Esc, _) => {
                 if self.tab == Tab::Commits && self.opened.is_some() {
                     self.leave_commit(editor);
+                } else if self.tab == Tab::Commits && self.history_of.is_some() {
+                    self.leave_history(editor);
                 } else {
                     self.focused = false;
                 }
@@ -1317,10 +1463,14 @@ impl FileTree {
             Some(Ok(changes)) if !changes.is_empty() => format!("Changes {}", changes.len()),
             _ => "Changes".to_string(),
         };
+        let commits_label = match self.history_of.as_deref().and_then(Path::file_name) {
+            Some(name) => format!("History {}", name.to_string_lossy()),
+            None => "Commits".to_string(),
+        };
         let labels = [
             (Tab::Files, "Files".to_string()),
             (Tab::Changes, changes_label),
-            (Tab::Commits, "Commits".to_string()),
+            (Tab::Commits, commits_label),
         ];
         let mut x = area.x + 1;
         for (index, (tab, label)) in labels.iter().enumerate() {
@@ -1533,25 +1683,42 @@ fn query_changes(root: &Path) -> ChangesAnswer {
 }
 
 /// Reads one page of history, newest first, starting `skip` commits down from HEAD.
-fn query_commits(root: &Path, skip: usize) -> CommitsAnswer {
+/// With `history`, a path below the root, it is that file's history instead, followed across
+/// renames, each commit carrying the name the file had in it.
+fn query_commits(root: &Path, skip: usize, history: Option<&Path>) -> CommitsAnswer {
     let skip = format!("--skip={skip}");
     let count = format!("--max-count={COMMITS_PAGE}");
-    let log = run_git(
-        root,
-        // The committer's date, which a rebase renews, so the ages read in the list's order.
-        &[
-            "log",
-            "-z",
-            "--abbrev=7",
-            "--format=%H%x1f%h%x1f%ct%x1f%s",
-            &skip,
-            &count,
-        ],
-    )?;
+    let followed = history.map(|path| path.to_string_lossy().into_owned());
+    // The committer's date, which a rebase renews, so the ages read in the list's order.
+    let mut args = vec!["log", "-z", "--abbrev=7", "--format=%H%x1f%h%x1f%ct%x1f%s"];
+    match &followed {
+        // --follow miscounts --skip, so a file's history is read whole, in one page.
+        Some(path) => args.extend(["--follow", "--name-status", "--", path.as_str()]),
+        None => args.extend([skip.as_str(), count.as_str()]),
+    }
+    let log = run_git(root, &args)?;
 
-    let mut commits = Vec::new();
-    for record in log.split(|byte| *byte == 0) {
+    let mut commits: Vec<Commit> = Vec::new();
+    // A commit's line of --name-status follows its header after a newline.
+    let mut records = log
+        .split(|byte| *byte == 0)
+        .map(|record| record.strip_prefix(b"\n").unwrap_or(record));
+    while let Some(record) = records.next() {
         if record.is_empty() {
+            continue;
+        }
+        // The followed file's status: its path next, or where it came from and then its path.
+        if !record.contains(&0x1f) {
+            if matches!(record[0], b'R' | b'C') {
+                records.next();
+            }
+            let (Some(commit), Some(path)) = (commits.last_mut(), records.next()) else {
+                return Err(format!(
+                    "git log: unreadable entry {:?}",
+                    String::from_utf8_lossy(record)
+                ));
+            };
+            commit.file = Some(String::from_utf8_lossy(path).into_owned());
             continue;
         }
         let record = String::from_utf8_lossy(record);
@@ -1569,9 +1736,91 @@ fn query_commits(root: &Path, skip: usize) -> CommitsAnswer {
             short: short.to_string(),
             time,
             subject: subject.to_string(),
+            file: None,
         });
     }
     Ok(commits)
+}
+
+/// Blames one line of the buffer's text as git would the file with that text in it: a line
+/// changed since the last commit belongs to no commit.
+fn query_blame(root: &Path, request: &BlameRequest) -> Result<Blamed, String> {
+    let range = format!("{0},{0}", request.line + 1);
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args([
+            "blame",
+            "--porcelain",
+            "-L",
+            &range,
+            "--contents",
+            "-",
+            "--",
+        ])
+        .arg(&request.path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("git: {err}"))?;
+    // git reads the whole text before it answers, and the answer for one line is short, so
+    // writing it all first cannot wait on a full pipe.
+    let written = match child.stdin.take() {
+        Some(mut stdin) => stdin.write_all(request.contents.as_bytes()),
+        None => Ok(()),
+    };
+    let output = child
+        .wait_with_output()
+        .map_err(|err| format!("git blame: {err}"))?;
+    // A git that gave up before reading says why; the broken pipe it leaves behind does not.
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let reason = stderr.lines().next().unwrap_or("failed").to_string();
+        return Err(format!("git blame: {reason}"));
+    }
+    written.map_err(|err| format!("git blame: {err}"))?;
+
+    let answer = String::from_utf8_lossy(&output.stdout);
+    let mut lines = answer.lines();
+    let hash = lines
+        .next()
+        .and_then(|first| first.split(' ').next())
+        .ok_or("git blame: no answer")?;
+    let mut author = "";
+    let mut time = "";
+    let mut subject = "";
+    let mut file = "";
+    for line in lines.take_while(|line| !line.starts_with('\t')) {
+        let (key, value) = line.split_once(' ').unwrap_or((line, ""));
+        match key {
+            "author" => author = value,
+            "committer-time" => time = value,
+            "summary" => subject = value,
+            "filename" => file = value,
+            _ => {}
+        }
+    }
+    let commit = if hash.bytes().all(|byte| byte == b'0') {
+        None
+    } else {
+        let Ok(time) = time.parse() else {
+            return Err(format!("git blame: unreadable date {time:?}"));
+        };
+        Some(Commit {
+            hash: hash.to_string(),
+            short: hash.chars().take(7).collect(),
+            time,
+            subject: subject.to_string(),
+            file: Some(file.to_string()),
+        })
+    };
+    Ok(Blamed {
+        path: request.path.clone(),
+        line: request.line,
+        author: author.to_string(),
+        commit,
+    })
 }
 
 /// Lists what one commit changed below the root (a merge against its first parent), and

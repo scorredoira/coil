@@ -228,6 +228,8 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "e" => file_explorer,
             "t" => file_tree_toggle,
             "T" => file_tree_focus,
+            "H" => file_history,
+            "B" => blame_line,
             "." => file_explorer_in_current_buffer_directory,
             "b" => buffer_picker,
             "j" => jumplist_picker,
