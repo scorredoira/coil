@@ -19,45 +19,19 @@
 # This fork
 
 Helix with the things you would otherwise leave the editor for: a sidebar that
-stays on screen, git's changes, history and blame, a search-and-replace panel,
-and a mouse that works where you point it. Everything else is helix as it is;
-this fork sits on top of its `master`.
-
-![Browsing a commit: its files in the sidebar, the diff of the one under the cursor on the right](fork/screenshots/commits.png)
+stays on screen, search and replace across the project, git's changes, history
+and blame, and a mouse that works where you point it. Everything else is helix
+as it is; this fork sits on top of its `master`.
 
 ### A sidebar file tree
 
 `Space t` shows or hides it, `Space T` focuses it. It follows the file you are
 editing, and inside it `j`/`k` move, `Enter` opens, `a` creates, `r` renames,
 `d` deletes. A click opens a row, the wheel scrolls, and dragging the line
-between the tree and the editor resizes it: the width is remembered.
+between the tree and the editor resizes it: the width is remembered. Buffers
+are tabs you can click, each with a cross that closes it.
 
 ![The file tree beside two open files](fork/screenshots/tree.png)
-
-### What changed, since the last commit
-
-The **Changes** tab (`Tab` inside the tree) lists only what `git status` names,
-each file with its letter: modified, added, deleted, renamed.
-
-![The Changes tab and a changed line marked in the gutter](fork/screenshots/changes.png)
-
-### The history, commit by commit
-
-The **Commits** tab lists the history. `Enter` on a commit lists the files it
-touched, and the editor shows the diff of whatever the cursor is on: the whole
-commit, a directory, one file. `Esc` goes back to the list. It keeps itself up
-to date when you commit from elsewhere.
-
-### A file's history, and who changed a line
-
-`Space H` shows the history of the current file, following renames; `Enter`
-on a commit opens it on that file. `Space B` says who last changed the line
-under the cursor, when, and in which commit; press it again to open that
-commit.
-
-![The history of one file](fork/screenshots/history.png)
-
-![Who changed the line under the cursor, in the status line](fork/screenshots/blame.png)
 
 ### Search and replace across the project
 
@@ -68,16 +42,23 @@ on screen: the files are changed but left unsaved, and one undo takes it back.
 
 ![The global search panel with replace and filters](fork/screenshots/search.png)
 
-### Smaller things
+### Git in the sidebar
 
-- Buffers are tabs you can click, each with a cross that closes it.
-- In a picker, a click previews a row and a double click opens it.
-- A diff buffer draws no indentation guides; a buffer with no file can carry a
-  name.
-- Keymaps: a shifted letter reaches the map as its uppercase. Pressing `i` no
-  longer pops up completion when nothing has been typed.
-- Themes: hex colours may carry an alpha, a bad palette entry only costs itself,
-  and `base16_transparent` reads on a light terminal.
+The **Changes** tab (`Tab` inside the tree) lists what `git status` names, each
+file with its letter: modified, added, deleted, renamed. The **Commits** tab
+lists the history; `Enter` on a commit lists the files it touched, and the
+editor shows the diff of whatever the cursor is on: the whole commit, a
+directory, one file. `Esc` goes back. `Space H` narrows it to the current
+file's history, following renames.
+
+![Browsing a commit: its files in the sidebar, the diff of the one under the cursor on the right](fork/screenshots/commits.png)
+
+### Who changed this line
+
+`Space B` says who last changed the line under the cursor, when, and in which
+commit; press it again to open that commit in the sidebar.
+
+![Who changed the line under the cursor, in the status line](fork/screenshots/blame.png)
 
 ### Installing
 
@@ -88,9 +69,19 @@ cargo install --path helix-term --locked
 ln -Tsf $PWD/runtime ~/.config/helix/runtime
 ```
 
-The screenshots are taken by `fork/shoot.sh` from the built editor, so they
-show exactly what the code does.
+<br>
 
+---
+---
+
+<div align="center">
+
+**What follows is helix's own README.** The project is
+[helix-editor/helix](https://github.com/helix-editor/helix).
+
+</div>
+
+---
 ---
 
 ![Screenshot](./screenshot.png)
