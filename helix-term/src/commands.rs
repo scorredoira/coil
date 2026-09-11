@@ -69,7 +69,7 @@ use crate::{
     ui::{
         self,
         overlay::overlaid,
-        picker::{PanelInput, PanelToggle},
+        picker::{PanelField, PanelInput, PanelToggle},
         Picker, PickerColumn, Popup, Prompt, PromptEvent,
     },
 };
@@ -2645,9 +2645,6 @@ fn global_search(cx: &mut Context) {
         .without_filtering()
         .keeping_start(),
         PickerColumn::hidden("contents"),
-        PickerColumn::hidden(REPLACE),
-        PickerColumn::hidden(INCLUDE),
-        PickerColumn::hidden(EXCLUDE),
     ];
 
     let get_files = |input: &PanelInput,
@@ -2656,6 +2653,7 @@ fn global_search(cx: &mut Context) {
                      injector: &ui::picker::Injector<_, _>| {
         let query = input.query();
         if query.is_empty() {
+            clear_search_error(editor);
             return async { Ok(()) }.boxed();
         }
 
@@ -2679,29 +2677,27 @@ fn global_search(cx: &mut Context) {
             .multi_line(true)
             .build(query)
         {
-            Ok(matcher) => {
-                // Clear any "Failed to compile regex" errors out of the statusline.
-                editor.clear_status();
-                matcher
-            }
+            Ok(matcher) => matcher,
             Err(err) => {
                 log::info!("Failed to compile search pattern in global search: {}", err);
+                editor.set_error(format!("{SEARCH_ERROR}the pattern is not a valid regex"));
                 return async { Err(anyhow::anyhow!("Failed to compile regex")) }.boxed();
             }
         };
 
         let overrides =
             match build_overrides(&search_root, input.field(INCLUDE), input.field(EXCLUDE)) {
-                Ok(overrides) => {
-                    editor.clear_status();
-                    overrides
-                }
+                Ok(overrides) => overrides,
                 Err(err) => {
                     log::info!("Failed to build the global search file filter: {err}");
+                    editor.set_error(format!("{SEARCH_ERROR}bad include/exclude glob: {err}"));
                     return async { Err(anyhow::anyhow!("Failed to build the file filter")) }
                         .boxed();
                 }
             };
+
+        // Both inputs are good, so an error either of them left behind is stale.
+        clear_search_error(editor);
 
         let dedup_symlinks = config.file_picker_config.deduplicate_links;
         let absolute_root = search_root
@@ -2804,6 +2800,28 @@ fn global_search(cx: &mut Context) {
     let reg = cx.register.unwrap_or('/');
     cx.editor.registers.last_search_register = reg;
 
+    // A broken file costs the remembered filters, not the search.
+    let filters = match load_search_filters() {
+        Ok(filters) => filters,
+        Err(err) => {
+            log::error!("Could not read the global search filters: {err:#}");
+            cx.editor
+                .set_error(format!("Could not read the global search filters: {err:#}"));
+            SearchFilters::default()
+        }
+    };
+    let fields = vec![
+        PanelField::new(REPLACE, "replace", "the text each match becomes")
+            .shown_by(SHOW_REPLACE)
+            .with_button("replace all"),
+        PanelField::new(INCLUDE, "include", "e.g. src/, *.ts")
+            .shown_by(FILTERS)
+            .with_value(filters.include, cx.editor),
+        PanelField::new(EXCLUDE, "exclude", "e.g. dist/, *.test.ts")
+            .shown_by(FILTERS)
+            .with_value(filters.exclude, cx.editor),
+    ];
+
     let picker = Picker::new(
         columns,
         1, // contents
@@ -2858,18 +2876,35 @@ fn global_search(cx: &mut Context) {
     .with_toggles(vec![
         PanelToggle::new(MATCH_CASE, "Aa", 'c', false),
         PanelToggle::new(WHOLE_WORD, "ab", 'w', false),
-        // Regex is on, as global search has always been.
-        PanelToggle::new(REGEX, ".*", 'r', true),
+        PanelToggle::new(REGEX, ".*", 'r', false),
         PanelToggle::new(PRESERVE_CASE, "AB", 'p', false),
+        PanelToggle::new(SHOW_REPLACE, "⇄", 'h', false),
+        PanelToggle::new(FILTERS, "…", 'i', false).warning_when_off("filtered"),
     ])
+    .with_fields(fields, |editor, input| {
+        let filters = SearchFilters {
+            include: input.field(INCLUDE).to_string(),
+            exclude: input.field(EXCLUDE).to_string(),
+        };
+
+        if let Err(err) = save_search_filters(&filters) {
+            log::error!("Could not save the global search filters: {err:#}");
+            editor.set_error(format!("Could not save the global search filters: {err:#}"));
+        }
+    })
     .with_hint(&[
-        "%r replace",
-        "%i include",
-        "%e exclude",
-        "A-a apply",
-        "A-c/w/r/p switches",
+        "⇄ replace",
+        "… filters",
+        "click or Space flips a switch",
+        "Tab next",
     ])
     .with_panel_action(|cx, input, results| {
+        // A replacement nobody can see is not applied: an empty one deletes.
+        if !input.toggle(SHOW_REPLACE) {
+            cx.editor.set_error("Show the replace line (⇄) to replace");
+            return;
+        }
+
         let paths: Vec<PathBuf> = results
             .iter()
             .map(|result| result.path.to_path_buf())
@@ -2962,6 +2997,21 @@ fn summarize_match(matched: &str, matcher: &RegexMatcher) -> (String, Vec<(usize
     (format!("{ellipsis}{}", &line[from..to]), hits)
 }
 
+/// What every error global search puts on the statusline starts with, so it can
+/// clear its own and only its own.
+const SEARCH_ERROR: &str = "Global search: ";
+
+fn clear_search_error(editor: &mut Editor) {
+    let own = matches!(
+        &editor.status_msg,
+        Some((message, helix_view::editor::Severity::Error)) if message.starts_with(SEARCH_ERROR)
+    );
+
+    if own {
+        editor.clear_status();
+    }
+}
+
 /// The names the search panel gives its own fields and switches.
 const REPLACE: &str = "replace";
 const INCLUDE: &str = "include";
@@ -2970,10 +3020,54 @@ const MATCH_CASE: &str = "match-case";
 const WHOLE_WORD: &str = "whole-word";
 const REGEX: &str = "regex";
 const PRESERVE_CASE: &str = "preserve-case";
+const FILTERS: &str = "filters";
+const SHOW_REPLACE: &str = "show-replace";
 
 struct ReplaceOutcome {
     files: usize,
     matches: usize,
+}
+
+/// The include and exclude boxes, kept between sessions: they describe a project
+/// far more than they describe one search.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct SearchFilters {
+    include: String,
+    exclude: String,
+}
+
+fn search_filters_file() -> PathBuf {
+    helix_loader::data_dir().join("global-search.toml")
+}
+
+/// The filters last typed, empty the first time.
+fn load_search_filters() -> anyhow::Result<SearchFilters> {
+    let path = search_filters_file();
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(SearchFilters::default());
+        }
+        Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
+    };
+
+    toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+}
+
+/// Written aside and renamed over, so another helix reading it never sees half.
+fn save_search_filters(filters: &SearchFilters) -> anyhow::Result<()> {
+    let path = search_filters_file();
+    let dir = path
+        .parent()
+        .expect("the file sits in helix's data directory");
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+
+    let text = toml::to_string(filters)?;
+    let temp = dir.join(format!(".global-search.{}.toml", std::process::id()));
+    std::fs::write(&temp, text).with_context(|| format!("writing {}", temp.display()))?;
+    std::fs::rename(&temp, &path).with_context(|| format!("replacing {}", path.display()))?;
+
+    Ok(())
 }
 
 /// Turns the panel's include/exclude lines into the walker's filter. Both take a

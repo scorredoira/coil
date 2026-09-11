@@ -47,6 +47,8 @@ pub struct Prompt {
     pub doc_fn: DocFn,
     next_char_handler: Option<PromptCharHandler>,
     language: Option<(&'static str, Arc<ArcSwap<syntax::Loader>>)>,
+    /// Drawn dim while the line is empty, to say what the line takes.
+    placeholder: Option<&'static str>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -103,7 +105,13 @@ impl Prompt {
             doc_fn: Box::new(|_| None),
             next_char_handler: None,
             language: None,
+            placeholder: None,
         }
+    }
+
+    pub fn with_placeholder(mut self, placeholder: &'static str) -> Self {
+        self.placeholder = Some(placeholder);
+        self
     }
 
     /// Gets the byte index in the input representing the current cursor location.
@@ -528,6 +536,14 @@ impl Prompt {
                     self.line_area.x,
                     self.line_area.y,
                     &suggestion,
+                    suggestion_color,
+                );
+            } else if let Some(placeholder) = self.placeholder {
+                surface.set_stringn(
+                    self.line_area.x,
+                    self.line_area.y,
+                    placeholder,
+                    self.line_area.width as usize,
                     suggestion_color,
                 );
             }

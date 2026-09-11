@@ -115,6 +115,9 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> AsyncHook
 pub(super) struct DynamicQueryChange {
     pub input: PanelInput,
     pub is_paste: bool,
+    /// Search again even if the inputs are the ones last searched for: the files
+    /// under them have changed.
+    pub rerun: bool,
 }
 
 pub(super) struct DynamicQueryHandler<T: 'static + Send + Sync, D: 'static + Send + Sync> {
@@ -142,8 +145,12 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> AsyncHook for DynamicQu
     type Event = DynamicQueryChange;
 
     fn handle_event(&mut self, change: Self::Event, _timeout: Option<Instant>) -> Option<Instant> {
-        let DynamicQueryChange { input, is_paste } = change;
-        if input == self.last_input {
+        let DynamicQueryChange {
+            input,
+            is_paste,
+            rerun,
+        } = change;
+        if input == self.last_input && !rerun {
             // If the inputs revert to the last ones we requested, no need to
             // make a new request.
             self.input = None;

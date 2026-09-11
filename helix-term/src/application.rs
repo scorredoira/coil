@@ -896,7 +896,17 @@ impl Application {
                                             server_id,
                                         );
                                     }
-                                    self.editor.clear_status();
+                                    // Only this server's own progress line is its to clear:
+                                    // anything else there was said by somebody else.
+                                    let prefix = format!("{}: ", language_server!().name());
+                                    let own = matches!(
+                                        &self.editor.status_msg,
+                                        Some((status, helix_view::editor::Severity::Info))
+                                            if status.starts_with(&prefix)
+                                    );
+                                    if own {
+                                        self.editor.clear_status();
+                                    }
 
                                     // we want to render to clear any leftover spinners or messages
                                     return;
