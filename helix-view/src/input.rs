@@ -77,6 +77,20 @@ impl KeyEvent {
         }
     }
 
+    /// The character this key writes into the text, if any. A letter held with Cmd,
+    /// or with Ctrl, is a shortcut that nobody bound, not a letter. Ctrl with Alt
+    /// is how AltGr arrives on some systems, and that one does write.
+    pub fn typed_char(&self) -> Option<char> {
+        let shortcut = self.modifiers.contains(KeyModifiers::SUPER)
+            || (self.modifiers.contains(KeyModifiers::CONTROL)
+                && !self.modifiers.contains(KeyModifiers::ALT));
+        if shortcut {
+            return None;
+        }
+
+        self.char()
+    }
+
     /// Format the key in such a way that a concatenated sequence
     /// of keys can be read easily.
     ///
@@ -716,6 +730,20 @@ pub fn parse_macro(keys_str: &str) -> anyhow::Result<Vec<KeyEvent>> {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn a_shortcut_nobody_bound_writes_nothing() {
+        let typed = |key: &str| str::parse::<KeyEvent>(key).unwrap().typed_char();
+
+        assert_eq!(typed("c"), Some('c'));
+        assert_eq!(typed("C"), Some('C'));
+        assert_eq!(typed("A-c"), Some('c'));
+        assert_eq!(typed("C-A-c"), Some('c'));
+        assert_eq!(typed("Cmd-c"), None);
+        assert_eq!(typed("Cmd-S-c"), None);
+        assert_eq!(typed("C-c"), None);
+        assert_eq!(typed("ret"), None);
+    }
 
     #[test]
     fn parsing_unmodified_keys() {

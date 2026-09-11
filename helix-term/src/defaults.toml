@@ -27,6 +27,14 @@ enable = false
 
 [keys.normal]
 C-c = "yank_to_clipboard"
+C-a = "select_all"
+Cmd-c = "yank_to_clipboard"
+C-s = ":write"
+Cmd-s = ":write"
+C-g = "goto_line_prompt"
+C-f = "search_in_file"
+A-z = ":toggle soft-wrap.enable"
+C-M = "markdown_preview_toggle"
 C-q = ":quit-all"
 F2 = "rename_symbol"
 F8 = "goto_next_diag"
@@ -38,3 +46,20 @@ space = "global_search"
 
 [keys.select]
 C-c = "yank_to_clipboard"
+C-a = "select_all"
+Cmd-c = "yank_to_clipboard"
+C-s = ":write"
+Cmd-s = ":write"
+C-g = "goto_line_prompt"
+C-f = "search_in_file"
+A-z = ":toggle soft-wrap.enable"
+C-M = "markdown_preview_toggle"
+
+[keys.insert]
+Cmd-c = "yank_to_clipboard"
+C-s = ":write"
+Cmd-s = ":write"
+C-g = "goto_line_prompt"
+C-f = "search_in_file"
+A-z = ":toggle soft-wrap.enable"
+C-M = "markdown_preview_toggle"

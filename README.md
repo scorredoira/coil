@@ -10,7 +10,8 @@ A fork of [Helix](https://github.com/helix-editor/helix)
 
 Helix's modal editing, with the things you would otherwise leave the editor
 for: a sidebar that stays on screen, search and replace across the project,
-git's changes, history and blame, and a mouse that works where you point it.
+git's changes, history and blame, Markdown as it reads, and a mouse that works
+where you point it.
 Everything else is Helix as it is — its keys, its language servers, its
 tree-sitter — and Coil follows its `master`.
 
@@ -62,6 +63,24 @@ screen: the files are changed but left unsaved, and one undo takes it back.
 
 ![The search panel with replace and filters](fork/screenshots/search.png)
 
+## Search and replace in this file
+
+`Ctrl-f` opens the same panel on the file you are editing, its name on the
+border: the matches listed by line, the file beside them, the same switches.
+`Alt-a` replaces every match in it, unsaved, and one undo takes it back.
+`Ctrl-g` asks for a line number and goes there, following it as you type.
+
+![The search panel on one file, its matches by line](fork/screenshots/search-file.png)
+
+## Markdown, as it reads
+
+`Ctrl-Shift-m` draws the Markdown file you are editing beside it: headings,
+lists and tasks, quotes and GitHub's alerts, tables lined up, code highlighted,
+all reflowed to the panel. It redraws as you type and keeps to the part of the
+file on screen; the wheel over it scrolls it on its own until the file moves.
+
+![A README and its preview side by side](fork/screenshots/preview.png)
+
 ## Tabs, splits and the mouse
 
 Buffers are tabs you can click, each with a cross that closes it. Splits
@@ -78,12 +97,21 @@ you already know:
 
 | Key | Does |
 |---|---|
+| `Ctrl-a` | Select everything |
 | `Ctrl-c` | Copy the selection to the system clipboard |
+| `Ctrl-s` | Save |
+| `Ctrl-f` | Search and replace in this file |
+| `Ctrl-g` | Go to a line |
+| `Alt-z` | Wrap long lines, or stop |
+| `Ctrl-Shift-m` | Show or hide the Markdown preview |
 | `F12` / `Shift-F12` | Go to the definition / to the references |
 | `F2` | Rename the symbol |
 | `F8` | Next diagnostic |
 | `Ctrl-q` | Quit |
 | `Space Space` | Search and replace across the project (`Space /` too) |
+
+On a Mac `Cmd-c` copies and `Cmd-s` saves as well, and a `Cmd` or `Ctrl` key
+nothing is bound to never types its letter.
 
 And the editor starts the way you would set it up: long lines wrap,
 indentation guides show, open files are tabs, the cursor is a bar while
@@ -102,8 +130,10 @@ its settings.
 
 The keys are Helix's, and so is its documentation:
 [docs.helix-editor.com](https://docs.helix-editor.com/) applies as it is —
-except that `Ctrl-c` copies (comment with `Space c`). Coil keeps its own
-files, so the two never mix:
+except for the keys above: `Ctrl-c` copies (comment with `Space c`), `Ctrl-a`
+selects everything (incrementing a number keeps no key), `Ctrl-s` saves and
+`Ctrl-f` searches the file (a page down is `PageDown`). Coil keeps
+its own files, so the two never mix:
 
 | | Helix | Coil |
 |---|---|---|

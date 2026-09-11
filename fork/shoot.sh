@@ -99,6 +99,25 @@ keys Tab
 typed 'helix-term/**'
 shoot search 2
 
+start helix-term/src/ui/sidebar/list.rs
+keys C-f
+typed cursor
+keys M-h
+keys Tab
+typed selected
+shoot search-file 2
+
+# Ctrl-Shift-m cannot cross tmux, so the preview is asked for by name.
+start README.md
+keys Space '?'
+typed markdown_preview_toggle
+keys Enter
+keys C-g
+typed "$(grep -n -m1 '^## Ready as installed' "$demo/README.md" | cut -d: -f1)"
+keys Enter
+keys z t
+shoot preview
+
 start --vsplit helix-term/src/ui/sidebar/mod.rs helix-term/src/ui/sidebar/tab.rs
 keys Space T
 keys Escape

@@ -241,11 +241,42 @@ mod tests {
         assert_eq!(config.editor.soft_wrap.enable, Some(true));
         assert!(!config.editor.file_picker.git_ignore);
         assert!(matches!(config.theme, Some(theme::Config::Adaptive { .. })));
-        assert_eq!(command_at(&config, Mode::Normal, &["C-c"]), "yank_to_clipboard");
-        assert_eq!(command_at(&config, Mode::Select, &["C-c"]), "yank_to_clipboard");
-        assert_eq!(command_at(&config, Mode::Normal, &["F12"]), "goto_definition");
-        assert_eq!(command_at(&config, Mode::Normal, &["space", "space"]), "global_search");
-        assert_eq!(command_at(&config, Mode::Normal, &["space", "/"]), "global_search");
+        assert_eq!(
+            command_at(&config, Mode::Normal, &["C-c"]),
+            "yank_to_clipboard"
+        );
+        assert_eq!(
+            command_at(&config, Mode::Select, &["C-c"]),
+            "yank_to_clipboard"
+        );
+        assert_eq!(
+            command_at(&config, Mode::Normal, &["F12"]),
+            "goto_definition"
+        );
+        assert_eq!(
+            command_at(&config, Mode::Normal, &["space", "space"]),
+            "global_search"
+        );
+        assert_eq!(
+            command_at(&config, Mode::Normal, &["space", "/"]),
+            "global_search"
+        );
+
+        assert_eq!(command_at(&config, Mode::Normal, &["C-a"]), "select_all");
+        assert_eq!(command_at(&config, Mode::Select, &["C-a"]), "select_all");
+
+        for mode in [Mode::Normal, Mode::Select, Mode::Insert] {
+            assert_eq!(command_at(&config, mode, &["Cmd-c"]), "yank_to_clipboard");
+            assert_eq!(command_at(&config, mode, &["C-s"]), "write");
+            assert_eq!(command_at(&config, mode, &["Cmd-s"]), "write");
+            assert_eq!(command_at(&config, mode, &["C-g"]), "goto_line_prompt");
+            assert_eq!(command_at(&config, mode, &["C-f"]), "search_in_file");
+            assert_eq!(command_at(&config, mode, &["A-z"]), "toggle-option");
+            assert_eq!(
+                command_at(&config, mode, &["C-M"]),
+                "markdown_preview_toggle"
+            );
+        }
     }
 
     #[test]
@@ -269,10 +300,19 @@ mod tests {
             config.theme,
             Some(theme::Config::Constant("base16_default".into()))
         );
-        assert_eq!(command_at(&config, Mode::Normal, &["C-c"]), "toggle_comments");
-        assert_eq!(command_at(&config, Mode::Normal, &["space", "x"]), "file_picker");
+        assert_eq!(
+            command_at(&config, Mode::Normal, &["C-c"]),
+            "toggle_comments"
+        );
+        assert_eq!(
+            command_at(&config, Mode::Normal, &["space", "x"]),
+            "file_picker"
+        );
         // A key the user added under space leaves Coil's others there.
-        assert_eq!(command_at(&config, Mode::Normal, &["space", "space"]), "global_search");
+        assert_eq!(
+            command_at(&config, Mode::Normal, &["space", "space"]),
+            "global_search"
+        );
         // And what neither names stays Coil's.
         assert!(!config.editor.file_picker.git_ignore);
     }

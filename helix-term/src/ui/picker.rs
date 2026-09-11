@@ -434,6 +434,7 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     /// A line of help drawn on the bottom border, for what the picker cannot show
     /// on its own: the `%field` prefixes it hides, what its switches mean.
     hint: &'static [&'static str],
+    title: Option<String>,
 
     /// Whether to show the preview panel (default true)
     show_preview: bool,
@@ -579,6 +580,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             last_click: None,
             panel_action: None,
             hint: &[],
+            title: None,
             truncate_start: true,
             show_preview: true,
             callback_fn: Box::new(callback_fn),
@@ -655,6 +657,12 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         action: impl Fn(&mut Context, &PanelInput, &[&T]) + 'static,
     ) -> Self {
         self.panel_action = Some(Box::new(action));
+        self
+    }
+
+    /// What the picker is, drawn on its top border.
+    pub fn with_title(mut self, title: String) -> Self {
+        self.title = Some(title);
         self
     }
 
@@ -1209,6 +1217,12 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         let inner = BLOCK.inner(area);
 
         BLOCK.render(area, surface);
+
+        if let Some(title) = &self.title {
+            let width = area.width.saturating_sub(4) as usize;
+            let title = format!(" {title} ");
+            surface.set_stringn(area.x + 2, area.y, &title, width, text_style);
+        }
 
         // On the border it costs no row of results. What does not fit is dropped
         // whole, never cut halfway through a key.

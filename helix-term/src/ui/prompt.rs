@@ -769,9 +769,12 @@ impl Component for Prompt {
             }
             // any char event that's not mapped to any other combo
             KeyEvent {
-                code: KeyCode::Char(c),
-                modifiers: _,
+                code: KeyCode::Char(_),
+                ..
             } => {
+                let Some(c) = event.typed_char() else {
+                    return EventResult::Consumed(None);
+                };
                 self.insert_char(c, cx);
                 (self.callback_fn)(cx, &self.line, PromptEvent::Update);
             }

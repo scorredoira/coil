@@ -71,7 +71,7 @@ use crate::{
     ui::{
         self,
         overlay::overlaid,
-        picker::{PanelField, PanelInput, PanelToggle},
+        picker::{PanelField, PanelInput, PanelToggle, PathOrId},
         Picker, PickerColumn, Popup, Prompt, PromptEvent,
     },
 };
@@ -392,6 +392,7 @@ impl MappableCommand {
         search_selection_detect_word_boundaries, "Use current selection as the search pattern, automatically wrapping with `\\b` on word boundaries",
         make_search_word_bounded, "Modify current search to make it word bounded",
         global_search, "Global search in workspace folder",
+        search_in_file, "Search and replace in the current file",
         extend_line, "Select current line, if already selected, extend to another line based on the anchor",
         extend_line_below, "Select current line, if already selected, extend to next line",
         extend_line_above, "Select current line, if already selected, extend to previous line",
@@ -417,6 +418,7 @@ impl MappableCommand {
         file_explorer_in_current_directory, "Open file explorer at current working directory",
         sidebar_focus, "Focus the sidebar, opening it if closed",
         sidebar_toggle, "Show or hide the sidebar",
+        markdown_preview_toggle, "Show or hide the Markdown preview beside the file",
         file_history, "Show the history of the current file in the sidebar",
         blame_line, "Show who last changed the current line; again opens that commit",
         code_action, "Perform code action",
@@ -461,6 +463,7 @@ impl MappableCommand {
         goto_last_modified_file, "Goto last modified file",
         goto_last_modification, "Goto last modification",
         goto_line, "Goto line",
+        goto_line_prompt, "Ask for a line number and go to it",
         goto_last_line, "Goto last line",
         extend_to_last_line, "Extend to last line",
         goto_first_diag, "Goto first diagnostic",
@@ -2575,6 +2578,23 @@ fn make_search_word_bounded(cx: &mut Context) {
 }
 
 fn global_search(cx: &mut Context) {
+    search_panel(cx, SearchScope::Workspace)
+}
+
+fn search_in_file(cx: &mut Context) {
+    let id = doc!(cx.editor).id();
+    search_panel(cx, SearchScope::Document(id))
+}
+
+/// Where the search panel looks: every file under the working directory, or the one
+/// buffer it was opened from, saved or not.
+#[derive(Clone, Copy)]
+enum SearchScope {
+    Workspace,
+    Document(DocumentId),
+}
+
+fn search_panel(cx: &mut Context, scope: SearchScope) {
     #[derive(Debug)]
     struct FileResult<'a> {
         path: Cow<'a, Path>,
@@ -2610,6 +2630,7 @@ fn global_search(cx: &mut Context) {
     }
 
     struct GlobalSearchConfig {
+        scope: SearchScope,
         smart_case: bool,
         file_picker_config: helix_view::editor::FilePickerConfig,
         style: PathStyleConfig,
@@ -2617,17 +2638,31 @@ fn global_search(cx: &mut Context) {
 
     let config = cx.editor.config();
     let config = GlobalSearchConfig {
+        scope,
         smart_case: config.search.smart_case,
         file_picker_config: config.file_picker.clone(),
         style: PathStyleConfig::new(&cx.editor.theme),
     };
 
+    // Inside one file the path says nothing; the line number is the place.
+    let location = match scope {
+        SearchScope::Workspace => {
+            PickerColumn::new("path", |item: &FileResult, config: &GlobalSearchConfig| {
+                config
+                    .style
+                    .stylize(Some(&item.path), Some(item.line_start))
+            })
+        }
+        SearchScope::Document(_) => {
+            PickerColumn::new("#", |item: &FileResult, config: &GlobalSearchConfig| {
+                let number = (item.line_start + 1).to_string();
+                Cell::from(Span::styled(number, config.style.number_style))
+            })
+        }
+    };
+
     let columns = [
-        PickerColumn::new("path", |item: &FileResult, config: &GlobalSearchConfig| {
-            config
-                .style
-                .stylize(Some(&item.path), Some(item.line_start))
-        }),
+        location,
         PickerColumn::new("line", |item: &FileResult, _config: &GlobalSearchConfig| {
             let mut spans = Vec::new();
             let mut at = 0;
@@ -2661,17 +2696,6 @@ fn global_search(cx: &mut Context) {
             return async { Ok(()) }.boxed();
         }
 
-        let search_root = helix_stdx::env::current_working_dir();
-        if !search_root.exists() {
-            return async { Err(anyhow::anyhow!("Current working directory does not exist")) }
-                .boxed();
-        }
-
-        let documents: Vec<_> = editor
-            .documents()
-            .map(|doc| (doc.path().map(ToOwned::to_owned), doc.text().to_owned()))
-            .collect();
-
         let match_case = input.toggle(MATCH_CASE);
         let matcher = match RegexMatcherBuilder::new()
             .case_smart(!match_case && config.smart_case)
@@ -2688,6 +2712,50 @@ fn global_search(cx: &mut Context) {
                 return async { Err(anyhow::anyhow!("Failed to compile regex")) }.boxed();
             }
         };
+
+        if let SearchScope::Document(id) = config.scope {
+            let Some(doc) = editor.document(id) else {
+                editor.set_error(format!("{SEARCH_ERROR}the buffer is closed"));
+                return async { Err(anyhow::anyhow!("The searched buffer is closed")) }.boxed();
+            };
+
+            let path = doc.path().map(ToOwned::to_owned).unwrap_or_default();
+            let text = doc.text().clone();
+            let injector = injector.clone();
+            clear_search_error(editor);
+
+            return async move {
+                let mut searcher = SearcherBuilder::new()
+                    .binary_detection(BinaryDetection::none())
+                    .multi_line(true)
+                    .build();
+                let sink = sinks::UTF8(|line_start, line_content| {
+                    let line_start = line_start as usize - 1;
+                    let line_end = line_start + line_content.lines().count() - 1;
+                    let result =
+                        FileResult::new(&path, line_start, line_end, line_content, &matcher);
+
+                    Ok(injector.push(result).is_ok())
+                });
+
+                let haystack = text.to_string();
+                searcher.search_slice(&matcher, haystack.as_bytes(), sink)?;
+
+                Ok(())
+            }
+            .boxed();
+        }
+
+        let search_root = helix_stdx::env::current_working_dir();
+        if !search_root.exists() {
+            return async { Err(anyhow::anyhow!("Current working directory does not exist")) }
+                .boxed();
+        }
+
+        let documents: Vec<_> = editor
+            .documents()
+            .map(|doc| (doc.path().map(ToOwned::to_owned), doc.text().to_owned()))
+            .collect();
 
         let overrides =
             match build_overrides(&search_root, input.field(INCLUDE), input.field(EXCLUDE)) {
@@ -2804,27 +2872,59 @@ fn global_search(cx: &mut Context) {
     let reg = cx.register.unwrap_or('/');
     cx.editor.registers.last_search_register = reg;
 
-    // A broken file costs the remembered filters, not the search.
-    let filters = match load_search_filters() {
-        Ok(filters) => filters,
-        Err(err) => {
-            log::error!("Could not read the global search filters: {err:#}");
-            cx.editor
-                .set_error(format!("Could not read the global search filters: {err:#}"));
-            SearchFilters::default()
-        }
-    };
-    let fields = vec![
+    let mut fields = vec![
         PanelField::new(REPLACE, "replace", "the text each match becomes")
             .shown_by(SHOW_REPLACE)
             .with_button("replace all"),
-        PanelField::new(INCLUDE, "include", "e.g. src/, *.ts")
-            .shown_by(FILTERS)
-            .with_value(filters.include, cx.editor),
-        PanelField::new(EXCLUDE, "exclude", "e.g. dist/, *.test.ts")
-            .shown_by(FILTERS)
-            .with_value(filters.exclude, cx.editor),
     ];
+    let mut toggles = vec![
+        PanelToggle::new(MATCH_CASE, "Aa", 'c', false),
+        PanelToggle::new(WHOLE_WORD, "ab", 'w', false),
+        PanelToggle::new(REGEX, ".*", 'r', false),
+        PanelToggle::new(PRESERVE_CASE, "AB", 'p', false),
+        PanelToggle::new(SHOW_REPLACE, "⇄", 'h', false),
+    ];
+
+    // Which files to walk means nothing inside one file.
+    let (title, hint): (String, &'static [&'static str]) = match scope {
+        SearchScope::Workspace => {
+            // A broken file costs the remembered filters, not the search.
+            let filters = match load_search_filters() {
+                Ok(filters) => filters,
+                Err(err) => {
+                    log::error!("Could not read the global search filters: {err:#}");
+                    cx.editor
+                        .set_error(format!("Could not read the global search filters: {err:#}"));
+                    SearchFilters::default()
+                }
+            };
+            fields.push(
+                PanelField::new(INCLUDE, "include", "e.g. src/, *.ts")
+                    .shown_by(FILTERS)
+                    .with_value(filters.include, cx.editor),
+            );
+            fields.push(
+                PanelField::new(EXCLUDE, "exclude", "e.g. dist/, *.test.ts")
+                    .shown_by(FILTERS)
+                    .with_value(filters.exclude, cx.editor),
+            );
+            toggles.push(PanelToggle::new(FILTERS, "…", 'i', false).warning_when_off("filtered"));
+
+            let hint: &'static [&'static str] = &[
+                "⇄ replace",
+                "… filters",
+                "click or Space flips a switch",
+                "Tab next",
+            ];
+            ("Search the workspace".to_string(), hint)
+        }
+        SearchScope::Document(id) => {
+            let name = doc!(cx.editor, &id).display_name();
+            let hint: &'static [&'static str] =
+                &["⇄ replace", "click or Space flips a switch", "Tab next"];
+            (format!("Search {name}"), hint)
+        }
+    };
 
     let picker = Picker::new(
         columns,
@@ -2839,12 +2939,25 @@ fn global_search(cx: &mut Context) {
                   ..
               },
               action| {
-            let doc = match cx.editor.open(path, action) {
-                Ok(id) => doc_mut!(cx.editor, &id),
-                Err(e) => {
-                    cx.editor
-                        .set_error(format!("Failed to open file '{}': {}", path.display(), e));
-                    return;
+            let doc = match scope {
+                SearchScope::Workspace => match cx.editor.open(path, action) {
+                    Ok(id) => doc_mut!(cx.editor, &id),
+                    Err(e) => {
+                        cx.editor.set_error(format!(
+                            "Failed to open file '{}': {}",
+                            path.display(),
+                            e
+                        ));
+                        return;
+                    }
+                },
+                SearchScope::Document(id) => {
+                    if cx.editor.document(id).is_none() {
+                        cx.editor.set_error("The searched buffer is closed");
+                        return;
+                    }
+                    cx.editor.switch(id, action);
+                    doc_mut!(cx.editor, &id)
                 }
             };
 
@@ -2868,24 +2981,28 @@ fn global_search(cx: &mut Context) {
         },
     )
     .with_preview(
-        |_editor,
-         FileResult {
-             path,
-             line_start,
-             line_end,
-             ..
-         }| { Some((path.as_ref().into(), Some((*line_start, *line_end)))) },
+        move |_editor,
+              FileResult {
+                  path,
+                  line_start,
+                  line_end,
+                  ..
+              }| {
+            let lines = Some((*line_start, *line_end));
+            match scope {
+                SearchScope::Workspace => Some((path.as_ref().into(), lines)),
+                SearchScope::Document(id) => Some((PathOrId::Id(id), lines)),
+            }
+        },
     )
+    .with_title(title)
     .with_history_register(Some(reg))
-    .with_toggles(vec![
-        PanelToggle::new(MATCH_CASE, "Aa", 'c', false),
-        PanelToggle::new(WHOLE_WORD, "ab", 'w', false),
-        PanelToggle::new(REGEX, ".*", 'r', false),
-        PanelToggle::new(PRESERVE_CASE, "AB", 'p', false),
-        PanelToggle::new(SHOW_REPLACE, "⇄", 'h', false),
-        PanelToggle::new(FILTERS, "…", 'i', false).warning_when_off("filtered"),
-    ])
-    .with_fields(fields, |editor, input| {
+    .with_toggles(toggles)
+    .with_fields(fields, move |editor, input| {
+        if let SearchScope::Document(_) = scope {
+            return;
+        }
+
         let filters = SearchFilters {
             include: input.field(INCLUDE).to_string(),
             exclude: input.field(EXCLUDE).to_string(),
@@ -2896,27 +3013,42 @@ fn global_search(cx: &mut Context) {
             editor.set_error(format!("Could not save the global search filters: {err:#}"));
         }
     })
-    .with_hint(&[
-        "⇄ replace",
-        "… filters",
-        "click or Space flips a switch",
-        "Tab next",
-    ])
-    .with_panel_action(|cx, input, results| {
+    .with_hint(hint)
+    .with_panel_action(move |cx, input, results| {
         // A replacement nobody can see is not applied: an empty one deletes.
         if !input.toggle(SHOW_REPLACE) {
             cx.editor.set_error("Show the replace line (⇄) to replace");
             return;
         }
 
-        let paths: Vec<PathBuf> = results
-            .iter()
-            .map(|result| result.path.to_path_buf())
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect();
+        let documents = match scope {
+            SearchScope::Workspace => {
+                let paths: HashSet<PathBuf> = results
+                    .iter()
+                    .map(|result| result.path.to_path_buf())
+                    .collect();
+                let opened: anyhow::Result<Vec<DocumentId>> = paths
+                    .iter()
+                    .map(|path| Ok(cx.editor.open(path, Action::Load)?))
+                    .collect();
+                match opened {
+                    Ok(documents) => documents,
+                    Err(err) => {
+                        cx.editor.set_error(format!("Replace failed: {err}"));
+                        return;
+                    }
+                }
+            }
+            SearchScope::Document(id) => vec![id],
+        };
 
-        match replace_in_files(cx.editor, input, paths) {
+        match replace_in_documents(cx.editor, input, documents) {
+            Ok(outcome) if matches!(scope, SearchScope::Document(_)) => {
+                cx.editor.set_status(format!(
+                    "Replaced {} matches. The buffer is not written yet",
+                    outcome.matches
+                ))
+            }
             Ok(outcome) => cx.editor.set_status(format!(
                 "Replaced {} matches in {} files. The buffers are not written yet: :wa",
                 outcome.matches, outcome.files,
@@ -3061,9 +3193,7 @@ fn load_search_filters() -> anyhow::Result<SearchFilters> {
 /// Written aside and renamed over, so another instance reading it never sees half.
 fn save_search_filters(filters: &SearchFilters) -> anyhow::Result<()> {
     let path = search_filters_file();
-    let dir = path
-        .parent()
-        .expect("the file sits in the data directory");
+    let dir = path.parent().expect("the file sits in the data directory");
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
 
     let text = toml::to_string(filters)?;
@@ -3294,10 +3424,10 @@ fn title_case(word: &str) -> String {
 /// Replaces every match of the panel's query in the given files. The buffers are
 /// left modified and unwritten, exactly like an LSP rename, so the whole thing is
 /// one undo away and nothing touches the disk until the user says so.
-fn replace_in_files(
+fn replace_in_documents(
     editor: &mut Editor,
     input: &PanelInput,
-    paths: Vec<PathBuf>,
+    documents: Vec<DocumentId>,
 ) -> anyhow::Result<ReplaceOutcome> {
     let query = input.query();
     ensure!(!query.is_empty(), "there is nothing to search for");
@@ -3318,8 +3448,7 @@ fn replace_in_files(
 
     let mut edits: Vec<(DocumentId, Transaction, usize)> = Vec::new();
 
-    for path in paths {
-        let doc_id = editor.open(&path, Action::Load)?;
+    for doc_id in documents {
         let doc = doc_mut!(editor, &doc_id);
         let text = doc.text().clone();
         let haystack = text.to_string();
@@ -3976,18 +4105,27 @@ fn file_explorer_in_current_directory(cx: &mut Context) {
     }
 }
 
-fn sidebar_focus(cx: &mut Context) {
-    cx.callback.push(Box::new(|compositor, cx| {
+fn sidebar_focus(_cx: &mut Context) {
+    // Through the job queue, not the context's callbacks: the command palette runs a
+    // command and drops those.
+    job::dispatch_blocking(|editor, compositor| {
         let editor_view = compositor.find::<ui::EditorView>().unwrap();
-        editor_view.sidebar.focus(cx.editor);
-    }));
+        editor_view.sidebar.focus(editor);
+    });
 }
 
-fn sidebar_toggle(cx: &mut Context) {
-    cx.callback.push(Box::new(|compositor, cx| {
+fn markdown_preview_toggle(_cx: &mut Context) {
+    job::dispatch_blocking(|editor, compositor| {
         let editor_view = compositor.find::<ui::EditorView>().unwrap();
-        editor_view.sidebar.toggle(cx.editor);
-    }));
+        editor_view.markdown_preview.toggle(editor);
+    });
+}
+
+fn sidebar_toggle(_cx: &mut Context) {
+    job::dispatch_blocking(|editor, compositor| {
+        let editor_view = compositor.find::<ui::EditorView>().unwrap();
+        editor_view.sidebar.toggle(editor);
+    });
 }
 
 struct PathStyleConfig {
@@ -4717,6 +4855,41 @@ fn push_jump(view: &mut View, doc: &mut Document) {
 
 fn goto_line(cx: &mut Context) {
     goto_line_impl(cx, Movement::Move);
+}
+
+/// `:goto` behind a prompt that says what it wants: the view follows the number while
+/// it is typed, Escape puts the cursor back, Enter leaves it there.
+fn goto_line_prompt(cx: &mut Context) {
+    let prompt = Prompt::new(
+        "Go to line: ".into(),
+        None,
+        ui::completers::none,
+        |cx: &mut compositor::Context, input: &str, event: PromptEvent| {
+            let goto = typed::TYPABLE_COMMAND_MAP
+                .get("goto")
+                .expect(":goto is a typable command");
+            let number = input.trim();
+            let is_number = number.chars().all(|c| c.is_ascii_digit());
+
+            let result = if event == PromptEvent::Validate && (number.is_empty() || !is_number) {
+                if !is_number {
+                    cx.editor
+                        .set_error(format!("'{number}' is not a line number"));
+                }
+                typed::execute_command(cx, goto, "", PromptEvent::Abort)
+            } else if is_number {
+                typed::execute_command(cx, goto, number, event)
+            } else {
+                typed::execute_command(cx, goto, "", event)
+            };
+
+            if let Err(err) = result {
+                cx.editor.set_error(err.to_string());
+            }
+        },
+    );
+
+    cx.push_layer(Box::new(prompt));
 }
 
 fn goto_line_impl(cx: &mut Context, movement: Movement) {

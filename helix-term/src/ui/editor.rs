@@ -7,6 +7,7 @@ use crate::{
     keymap::{KeymapResult, Keymaps},
     ui::{
         document::{render_document, LinePos, TextRenderer},
+        markdown_preview::MarkdownPreview,
         sidebar::{self, Sidebar},
         statusline,
         text_decorations::{self, Decoration, DecorationManager, InlineDiagnostics},
@@ -47,6 +48,7 @@ pub struct EditorView {
     /// Tracks if the terminal window is focused by reaction to terminal focus events
     terminal_focused: bool,
     pub(crate) sidebar: Sidebar,
+    pub(crate) markdown_preview: MarkdownPreview,
     /// The line blamed last, for a second blame of it to open its commit.
     pub(crate) last_blame: Option<LastBlame>,
     /// The bufferline tabs of the last frame, so a click can land on one.
@@ -94,6 +96,7 @@ impl EditorView {
             spinners: ProgressSpinners::default(),
             terminal_focused: true,
             sidebar,
+            markdown_preview: MarkdownPreview::default(),
             last_blame: None,
             bufferline_tabs: Vec::new(),
             dragged_separator: None,
@@ -1071,14 +1074,14 @@ impl EditorView {
             match keyresult {
                 KeymapResult::NotFound => {
                     if !self.on_next_key(OnKeyCallbackKind::Fallback, cx, event) {
-                        if let Some(ch) = event.char() {
+                        if let Some(ch) = event.typed_char() {
                             commands::insert::insert_char(cx, ch)
                         }
                     }
                 }
                 KeymapResult::Cancelled(pending) => {
                     for ev in pending {
-                        match ev.char() {
+                        match ev.typed_char() {
                             Some(ch) => commands::insert::insert_char(cx, ch),
                             None => {
                                 if let KeymapResult::Matched(command) =
@@ -1305,6 +1308,10 @@ impl EditorView {
         // A drag of the sidebar's separator stays the sidebar's when the mouse leaves it.
         if self.sidebar.contains(row, column) || self.sidebar.resizing() {
             return self.sidebar.handle_mouse(event, cxt);
+        }
+
+        if self.markdown_preview.contains(row, column) {
+            return self.markdown_preview.handle_mouse(event, cxt.editor);
         }
 
         // A split separator is taken before the views see the press, and while it is dragged
@@ -1783,6 +1790,9 @@ impl Component for EditorView {
             self.sidebar.render(sidebar_area, surface, cx.editor);
             editor_area = editor_area.clip_left(sidebar_width);
         }
+        let preview_width = self.markdown_preview.width(cx.editor, editor_area);
+        let preview_area = editor_area.clip_left(editor_area.width - preview_width);
+        editor_area = editor_area.clip_right(preview_width);
         if use_bufferline {
             editor_area = editor_area.clip_top(BUFFERLINE_HEIGHT);
         }
@@ -1801,6 +1811,14 @@ impl Component for EditorView {
         for (view, is_focused) in cx.editor.tree.views() {
             let doc = cx.editor.document(view.doc).unwrap();
             self.render_view(cx.editor, doc, view, editor_area, surface, is_focused);
+        }
+
+        // After the views, so it follows where they scrolled this frame.
+        if preview_width > 0 {
+            self.markdown_preview
+                .render(preview_area, surface, cx.editor);
+        } else {
+            self.markdown_preview.hide();
         }
 
         if config.auto_info {

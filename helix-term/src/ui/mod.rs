@@ -4,6 +4,7 @@ pub(crate) mod editor;
 mod info;
 pub mod lsp;
 mod markdown;
+pub mod markdown_preview;
 pub mod menu;
 pub mod overlay;
 pub mod picker;
