@@ -22,9 +22,9 @@ fi
 git clone --quiet --shared "$repo" "$work/demo"
 mkdir -p "$work/data" "$work/config/helix" "$out"
 cp "$here/demo-config.toml" "$work/config/helix/config.toml"
-# The tree as wide as a drag of its separator would leave it, remembered.
+# The sidebar as wide as a drag of its separator would leave it, remembered.
 mkdir -p "$work/data/helix"
-echo 'width = 40' >"$work/data/helix/file-tree.toml"
+echo 'width = 40' >"$work/data/helix/sidebar.toml"
 
 demo="$work/demo"
 
@@ -71,7 +71,7 @@ down() {
 	sleep 0.4
 }
 
-start helix-term/src/ui/editor.rs helix-term/src/ui/file_tree.rs
+start helix-term/src/ui/editor.rs helix-term/src/ui/sidebar/commits.rs
 keys Space T
 shoot tree
 
@@ -81,8 +81,8 @@ keys Home
 down "$(commit_row "render: a diff draws no indentation guides")"
 shoot commits 2
 
-start helix-term/src/ui/file_tree.rs
-keys 6 8 G
+start helix-term/src/ui/sidebar/commits.rs
+keys 3 9 G
 keys Space B
 shoot blame 2
 

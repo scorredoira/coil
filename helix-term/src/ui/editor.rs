@@ -1,5 +1,5 @@
 use crate::{
-    commands::{self, OnKeyCallback, OnKeyCallbackKind},
+    commands::{self, git::LastBlame, OnKeyCallback, OnKeyCallbackKind},
     compositor::{Component, Context, Event, EventResult},
     events::{OnModeSwitch, PostCommand},
     handlers::completion::CompletionItem,
@@ -7,7 +7,7 @@ use crate::{
     keymap::{KeymapResult, Keymaps},
     ui::{
         document::{render_document, LinePos, TextRenderer},
-        file_tree::{self, FileTree},
+        sidebar::{self, Sidebar},
         statusline,
         text_decorations::{self, Decoration, DecorationManager, InlineDiagnostics},
         Completion, ProgressSpinners,
@@ -46,7 +46,9 @@ pub struct EditorView {
     spinners: ProgressSpinners,
     /// Tracks if the terminal window is focused by reaction to terminal focus events
     terminal_focused: bool,
-    pub(crate) file_tree: FileTree,
+    pub(crate) sidebar: Sidebar,
+    /// The line blamed last, for a second blame of it to open its commit.
+    pub(crate) last_blame: Option<LastBlame>,
     /// The bufferline tabs of the last frame, so a click can land on one.
     bufferline_tabs: Vec<BufferlineTab>,
     /// The split separator being dragged: the mouse is its until the button is let go.
@@ -82,7 +84,7 @@ pub enum InsertEvent {
 }
 
 impl EditorView {
-    pub fn new(keymaps: Keymaps, file_tree: FileTree) -> Self {
+    pub fn new(keymaps: Keymaps, sidebar: Sidebar) -> Self {
         Self {
             keymaps,
             on_next_key: None,
@@ -91,7 +93,8 @@ impl EditorView {
             completion: None,
             spinners: ProgressSpinners::default(),
             terminal_focused: true,
-            file_tree,
+            sidebar,
+            last_blame: None,
             bufferline_tabs: Vec::new(),
             dragged_separator: None,
         }
@@ -1299,9 +1302,9 @@ impl EditorView {
             ..
         } = *event;
 
-        // A drag of the tree's separator stays the tree's when the mouse leaves it.
-        if self.file_tree.contains(row, column) || self.file_tree.resizing() {
-            return self.file_tree.handle_mouse(event, cxt);
+        // A drag of the sidebar's separator stays the sidebar's when the mouse leaves it.
+        if self.sidebar.contains(row, column) || self.sidebar.resizing() {
+            return self.sidebar.handle_mouse(event, cxt);
         }
 
         // A split separator is taken before the views see the press, and while it is dragged
@@ -1621,9 +1624,9 @@ impl Component for EditorView {
 
                 let mode = cx.editor.mode();
 
-                if self.file_tree.focused && self.on_next_key.is_none() {
-                    self.file_tree.handle_key(key, &mut cx);
-                    // A prompt the tree opened rides on the callbacks, like a command's.
+                if self.sidebar.focused && self.on_next_key.is_none() {
+                    self.sidebar.handle_key(key, &mut cx);
+                    // A prompt the sidebar opened rides on the callbacks, like a command's.
                     let callbacks = take(&mut cx.callback);
                     if callbacks.is_empty() {
                         return EventResult::Consumed(None);
@@ -1771,14 +1774,14 @@ impl Component for EditorView {
 
         // -1 for commandline and the bufferline's rows
         let mut editor_area = area.clip_bottom(1);
-        if self.file_tree.open {
-            let tree_width = self
-                .file_tree
-                .width(config.file_tree.width)
-                .min(area.width.saturating_sub(file_tree::EDITOR_ROOM));
-            let tree_area = editor_area.with_width(tree_width);
-            self.file_tree.render(tree_area, surface, cx.editor);
-            editor_area = editor_area.clip_left(tree_width);
+        if self.sidebar.open {
+            let sidebar_width = self
+                .sidebar
+                .width(config.sidebar.width)
+                .min(area.width.saturating_sub(sidebar::EDITOR_ROOM));
+            let sidebar_area = editor_area.with_width(sidebar_width);
+            self.sidebar.render(sidebar_area, surface, cx.editor);
+            editor_area = editor_area.clip_left(sidebar_width);
         }
         if use_bufferline {
             editor_area = editor_area.clip_top(BUFFERLINE_HEIGHT);
@@ -1889,7 +1892,7 @@ impl Component for EditorView {
     }
 
     fn cursor(&self, _area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
-        if self.file_tree.focused {
+        if self.sidebar.focused {
             return (None, CursorKind::Hidden);
         }
         match editor.cursor() {
@@ -1985,4 +1988,46 @@ fn close_bufferline_tab(cx: &mut commands::Context, doc_id: helix_view::Document
                 .set_error(format!("Could not close the buffer: {err:#}"));
         }
     }
+}
+
+/// Runs `work` off the main thread and, when it is done, hands what it made to `land` on
+/// the main one, with the editor and this view. It is how anything asked of git or the
+/// disk reaches the screen: as a job of the editor's, never decided while drawing.
+pub(crate) fn background<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+    land: impl FnOnce(&mut Editor, &mut EditorView, T) + Send + 'static,
+) {
+    tokio::spawn(async move {
+        let answer = match tokio::task::spawn_blocking(work).await {
+            Ok(answer) => answer,
+            Err(err) => {
+                log::error!("a background task stopped without answering: {err}");
+                return;
+            }
+        };
+        crate::job::dispatch(move |editor, compositor| {
+            let Some(view) = compositor.find::<EditorView>() else {
+                return;
+            };
+            land(editor, view, answer);
+        })
+        .await;
+    });
+}
+
+/// Calls `then` with the editor and this view after `delay`.
+pub(crate) fn later(
+    delay: std::time::Duration,
+    then: impl FnOnce(&mut Editor, &mut EditorView) + Send + 'static,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(delay).await;
+        crate::job::dispatch(move |editor, compositor| {
+            let Some(view) = compositor.find::<EditorView>() else {
+                return;
+            };
+            then(editor, view);
+        })
+        .await;
+    });
 }

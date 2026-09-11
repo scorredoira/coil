@@ -103,9 +103,9 @@
 | `file_explorer` | Open file explorer in workspace root | normal: `` <space>e ``, select: `` <space>e `` |
 | `file_explorer_in_current_buffer_directory` | Open file explorer at current buffer's directory | normal: `` <space>. ``, select: `` <space>. `` |
 | `file_explorer_in_current_directory` | Open file explorer at current working directory |  |
-| `file_tree_focus` | Focus the file tree, opening it if closed | normal: `` <space>T ``, select: `` <space>T `` |
-| `file_tree_toggle` | Show or hide the file tree | normal: `` <space>t ``, select: `` <space>t `` |
-| `file_history` | Show the history of the current file in the file tree | normal: `` <space>H ``, select: `` <space>H `` |
+| `sidebar_focus` | Focus the sidebar, opening it if closed | normal: `` <space>T ``, select: `` <space>T `` |
+| `sidebar_toggle` | Show or hide the sidebar | normal: `` <space>t ``, select: `` <space>t `` |
+| `file_history` | Show the history of the current file in the sidebar | normal: `` <space>H ``, select: `` <space>H `` |
 | `blame_line` | Show who last changed the current line; again opens that commit | normal: `` <space>B ``, select: `` <space>B `` |
 | `code_action` | Perform code action | normal: `` <space>a ``, select: `` <space>a `` |
 | `buffer_picker` | Open buffer picker | normal: `` <space>b ``, select: `` <space>b `` |

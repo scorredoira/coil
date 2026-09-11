@@ -136,13 +136,12 @@ impl Application {
         let keys = Box::new(Map::new(Arc::clone(&config), |config: &Config| {
             &config.keys
         }));
-        // A file named on the command line is an edit of that file, so the tree waits for
-        // <space>t; with none, or only a directory, it is the project that opens.
+        // A file named on the command line is an edit of that file, so the sidebar waits
+        // for <space>t; with none, or only a directory, it is the project that opens.
         let names_a_file = args.load_tutor || args.files.keys().any(|path| !path.is_dir());
-        let file_tree_open = config.load().editor.file_tree.open && !names_a_file;
-        let file_tree =
-            ui::file_tree::FileTree::new(helix_loader::find_workspace().0, file_tree_open);
-        let editor_view = Box::new(ui::EditorView::new(Keymaps::new(keys), file_tree));
+        let sidebar_open = config.load().editor.sidebar.open && !names_a_file;
+        let sidebar = ui::sidebar::Sidebar::new(helix_loader::find_workspace().0, sidebar_open);
+        let editor_view = Box::new(ui::EditorView::new(Keymaps::new(keys), sidebar));
         compositor.push(editor_view);
 
         let jobs = Jobs::new();

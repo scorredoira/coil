@@ -296,9 +296,9 @@ This layer is a kludge of mappings, mostly pickers.
 | `f`     | Open file picker at LSP workspace root                                  | `file_picker`                              |
 | `F`     | Open file picker at current working directory                           | `file_picker_in_current_directory`         |
 | `e`     | Open file explorer at workspace root                                     | `file_explorer`                            |
-| `t`     | Show or hide the file tree                                               | `file_tree_toggle`                         |
-| `T`     | Focus the file tree, opening it if closed                                | `file_tree_focus`                          |
-| `H`     | Show the history of the current file in the file tree                    | `file_history`                             |
+| `t`     | Show or hide the sidebar                                                 | `sidebar_toggle`                           |
+| `T`     | Focus the sidebar, opening it if closed                                  | `sidebar_focus`                            |
+| `H`     | Show the history of the current file in the sidebar                      | `file_history`                             |
 | `B`     | Show who last changed the current line; again opens that commit          | `blame_line`                               |
 | `.`     | Open file explorer at current buffer's directory                        | `file_explorer_in_current_buffer_directory`|
 | `b`     | Open buffer picker                                                      | `buffer_picker`                            |

@@ -1,10 +1,12 @@
 pub(crate) mod dap;
+pub(crate) mod git;
 pub(crate) mod lsp;
 pub(crate) mod syntax;
 pub(crate) mod typed;
 
 pub use dap::*;
 use futures_util::FutureExt;
+pub use git::*;
 use helix_event::status;
 use helix_stdx::{
     path::{self, find_paths},
@@ -413,9 +415,9 @@ impl MappableCommand {
         file_explorer, "Open file explorer in workspace root",
         file_explorer_in_current_buffer_directory, "Open file explorer at current buffer's directory",
         file_explorer_in_current_directory, "Open file explorer at current working directory",
-        file_tree_focus, "Focus the file tree, opening it if closed",
-        file_tree_toggle, "Show or hide the file tree",
-        file_history, "Show the history of the current file in the file tree",
+        sidebar_focus, "Focus the sidebar, opening it if closed",
+        sidebar_toggle, "Show or hide the sidebar",
+        file_history, "Show the history of the current file in the sidebar",
         blame_line, "Show who last changed the current line; again opens that commit",
         code_action, "Perform code action",
         buffer_picker, "Open buffer picker",
@@ -3974,47 +3976,17 @@ fn file_explorer_in_current_directory(cx: &mut Context) {
     }
 }
 
-fn file_tree_focus(cx: &mut Context) {
+fn sidebar_focus(cx: &mut Context) {
     cx.callback.push(Box::new(|compositor, cx| {
         let editor_view = compositor.find::<ui::EditorView>().unwrap();
-        editor_view.file_tree.focus(cx.editor);
+        editor_view.sidebar.focus(cx.editor);
     }));
 }
 
-fn file_tree_toggle(cx: &mut Context) {
-    cx.callback.push(Box::new(|compositor, _cx| {
+fn sidebar_toggle(cx: &mut Context) {
+    cx.callback.push(Box::new(|compositor, cx| {
         let editor_view = compositor.find::<ui::EditorView>().unwrap();
-        editor_view.file_tree.toggle();
-    }));
-}
-
-fn file_history(cx: &mut Context) {
-    let Some(path) = doc!(cx.editor).path().map(Path::to_path_buf) else {
-        cx.editor
-            .set_error("The buffer has no file to show the history of");
-        return;
-    };
-    cx.callback.push(Box::new(move |compositor, cx| {
-        let editor_view = compositor.find::<ui::EditorView>().unwrap();
-        editor_view.file_tree.show_history(cx.editor, path);
-    }));
-}
-
-fn blame_line(cx: &mut Context) {
-    let (view, doc) = current_ref!(cx.editor);
-    let Some(path) = doc.path().map(Path::to_path_buf) else {
-        cx.editor.set_error("The buffer has no file to blame");
-        return;
-    };
-    let text = doc.text().slice(..);
-    let request = ui::file_tree::BlameRequest {
-        path,
-        line: doc.selection(view.id).primary().cursor_line(text),
-        contents: text.to_string(),
-    };
-    cx.callback.push(Box::new(move |compositor, cx| {
-        let editor_view = compositor.find::<ui::EditorView>().unwrap();
-        editor_view.file_tree.blame(cx, request);
+        editor_view.sidebar.toggle(cx.editor);
     }));
 }
 

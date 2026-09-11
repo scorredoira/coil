@@ -1,0 +1,581 @@
+//! The Commits tab: the history, the whole repository's or one file's, and inside a commit
+//! the files it touched, the diff of what the cursor is on shown in the editor.
+
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use helix_view::graphics::{Modifier, Style};
+use helix_view::{Editor, Theme};
+use tui::buffer::Buffer as Surface;
+
+use super::diff_view::DiffTarget;
+use super::entries::{self, CommitRow, Folds, Row, RowPaint};
+use super::git::{self, ChangedFile, Commit, LOG_PAGE};
+use super::list::List;
+use super::tab::{Activation, Message, Outcome, TabContext, TabView};
+use super::{TabKind, REFRESH};
+
+pub struct CommitsTab {
+    root: PathBuf,
+    rows: Vec<Row>,
+    list: List,
+    showing: Showing,
+    /// Counts the times `showing` changed, so a page asked for the previous history is
+    /// dropped when it lands.
+    epoch: u32,
+    /// The history read so far, newest first, or why it could not be read.
+    log: Option<git::Answer<Vec<Commit>>>,
+    /// Whether the last page came back short, so there is nothing older to read.
+    complete: bool,
+    /// The `skip` of the page being asked for.
+    asking: Option<usize>,
+    /// Whether the next read of the top page is already on its way.
+    armed: bool,
+    opened: Option<OpenCommit>,
+    /// The hash whose files are being asked for.
+    opening: Option<String>,
+    /// Whether the diff follows the cursor over the history: from the first move or click
+    /// in it, so arriving at the tab does not take the editor's view away.
+    follow: bool,
+}
+
+/// Whose history the tab lists.
+#[derive(Clone, PartialEq, Eq)]
+enum Showing {
+    Repository,
+    /// One file's, followed across renames.
+    File(PathBuf),
+}
+
+/// A commit opened into its files, over the history it was chosen from.
+struct OpenCommit {
+    commit: Commit,
+    /// Where the root sits inside the repository, as git spells it: `""` or `"a/b/"`.
+    prefix: String,
+    files: Vec<ChangedFile>,
+    folds: Folds,
+    /// Where the history stood, to put it back on the way out.
+    list_cursor: usize,
+    list_scroll: usize,
+}
+
+/// A page of history as it landed: for which history, from where, and what git said.
+struct Page {
+    epoch: u32,
+    skip: usize,
+    answer: git::Answer<Vec<Commit>>,
+}
+
+impl CommitsTab {
+    pub fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            rows: Vec::new(),
+            list: List::default(),
+            showing: Showing::Repository,
+            epoch: 0,
+            log: None,
+            complete: false,
+            asking: None,
+            armed: false,
+            opened: None,
+            opening: None,
+            follow: false,
+        }
+    }
+
+    /// Lists the history of one file in place of the whole one.
+    pub fn show_history(&mut self, cx: &mut TabContext, path: PathBuf) {
+        self.set_showing(Showing::File(path));
+        self.rebuild(cx.editor);
+        self.ask_page(0);
+    }
+
+    /// Opens `commit` into its files, the cursor on the file the commit was reached by when
+    /// it carries one. The files are asked of git; the commit opens when they land.
+    pub fn open_commit(&mut self, commit: Commit) {
+        let hash = commit.hash.clone();
+        self.opening = Some(hash.clone());
+        let root = self.root.clone();
+        super::background(
+            move || git::commit_files(&root, &hash),
+            move |sidebar, editor, answer| {
+                let mut cx = TabContext {
+                    editor,
+                    diff: &mut sidebar.diff,
+                };
+                sidebar.commits.files_landed(&mut cx, commit, answer);
+            },
+        );
+    }
+
+    fn set_showing(&mut self, showing: Showing) {
+        self.showing = showing;
+        self.epoch = self.epoch.wrapping_add(1);
+        self.log = None;
+        self.complete = false;
+        self.asking = None;
+        self.opened = None;
+        self.follow = false;
+        self.list.home();
+    }
+
+    /// Asks git for the page of history starting `skip` commits down; one at a time.
+    fn ask_page(&mut self, skip: usize) {
+        if self.asking.is_some() {
+            return;
+        }
+        self.asking = Some(skip);
+        let root = self.root.clone();
+        let epoch = self.epoch;
+        let file = match &self.showing {
+            Showing::Repository => None,
+            Showing::File(path) => path.strip_prefix(&self.root).ok().map(Path::to_path_buf),
+        };
+        super::background(
+            move || {
+                let answer = match &file {
+                    Some(file) => git::file_log(&root, file),
+                    None => git::log(&root, skip),
+                };
+                Page {
+                    epoch,
+                    skip,
+                    answer,
+                }
+            },
+            |sidebar, editor, page| {
+                let shown = sidebar.showing(TabKind::Commits);
+                sidebar.commits.page_landed(shown, editor, page);
+            },
+        );
+    }
+
+    fn page_landed(&mut self, shown: bool, editor: &mut Editor, page: Page) {
+        if page.epoch != self.epoch {
+            return;
+        }
+        self.asking = None;
+        if self.take_page(page) {
+            self.rebuild(editor);
+        }
+        // For as long as the tab is on screen, the top page is read again after the last
+        // answer, so a commit or a rebase made elsewhere shows up. A file's history is read
+        // whole, too much to read again every few seconds: R asks.
+        let follows_head = self.showing == Showing::Repository;
+        if shown && follows_head && !self.armed {
+            self.armed = true;
+            super::later(REFRESH, |sidebar, _editor| {
+                sidebar.commits.armed = false;
+                let repository = sidebar.commits.showing == Showing::Repository;
+                if sidebar.showing(TabKind::Commits) && repository {
+                    sidebar.commits.ask_page(0);
+                }
+            });
+        }
+        self.ask_next_page_if_near_end();
+    }
+
+    /// Folds a page into the history. The top page replaces the list when the history moved
+    /// under it, keeping the cursor on its commit when that one is still there; a later
+    /// page extends it. Returns whether the list changed.
+    fn take_page(&mut self, page: Page) -> bool {
+        let commits = match page.answer {
+            Ok(commits) => commits,
+            Err(err) => {
+                self.log = Some(Err(err));
+                return true;
+            }
+        };
+        let complete = self.showing != Showing::Repository || commits.len() < LOG_PAGE;
+        if page.skip > 0 {
+            let Some(Ok(held)) = &mut self.log else {
+                return false;
+            };
+            // A page of a list that was read again from the top meanwhile.
+            if page.skip != held.len() {
+                return false;
+            }
+            held.extend(commits);
+            self.complete = complete;
+            return true;
+        }
+        let held = match &self.log {
+            Some(Ok(held)) => Some(held),
+            _ => None,
+        };
+        let unchanged = held.is_some_and(|held| {
+            held.first().map(|commit| &commit.hash) == commits.first().map(|commit| &commit.hash)
+        });
+        if unchanged {
+            return false;
+        }
+        let under_cursor = held
+            .and_then(|held| held.get(self.list.cursor))
+            .map(|commit| commit.hash.clone());
+        let found =
+            under_cursor.and_then(|hash| commits.iter().position(|commit| commit.hash == hash));
+        if let Some(index) = found {
+            self.list.select(index);
+        }
+        self.log = Some(Ok(commits));
+        self.complete = complete;
+        true
+    }
+
+    fn ask_next_page_if_near_end(&mut self) {
+        let Some(Ok(commits)) = &self.log else {
+            return;
+        };
+        if self.opened.is_none() && !self.complete && self.list.near_end() {
+            self.ask_page(commits.len());
+        }
+    }
+
+    fn files_landed(
+        &mut self,
+        cx: &mut TabContext,
+        commit: Commit,
+        answer: git::Answer<(String, Vec<ChangedFile>)>,
+    ) {
+        if self.opening.as_deref() != Some(commit.hash.as_str()) {
+            return;
+        }
+        self.opening = None;
+        let (prefix, files) = match answer {
+            Ok(answer) => answer,
+            Err(err) => {
+                cx.editor.set_error(err);
+                return;
+            }
+        };
+        let target = commit
+            .file
+            .as_deref()
+            .and_then(|file| file.strip_prefix(prefix.as_str()))
+            .map(|inside| self.root.join(inside));
+        let (list_cursor, list_scroll) = match &self.opened {
+            Some(opened) => (opened.list_cursor, opened.list_scroll),
+            None => (self.list.cursor, self.list.scroll),
+        };
+        self.opened = Some(OpenCommit {
+            commit,
+            prefix,
+            files,
+            folds: Folds::opened(),
+            list_cursor,
+            list_scroll,
+        });
+        self.list.home();
+        self.rebuild(cx.editor);
+        if let Some(target) = target {
+            entries::reselect(&self.rows, &mut self.list, Some(&target));
+            self.list.center();
+        }
+        self.preview(cx);
+    }
+
+    fn leave_commit(&mut self, cx: &mut TabContext) {
+        let Some(opened) = self.opened.take() else {
+            return;
+        };
+        self.rebuild(cx.editor);
+        // The history may have been read again meanwhile, so the commit is found by its hash.
+        let index = match &self.log {
+            Some(Ok(commits)) => commits
+                .iter()
+                .position(|commit| commit.hash == opened.commit.hash),
+            _ => None,
+        };
+        self.list.scroll = opened.list_scroll;
+        self.list.select(index.unwrap_or(opened.list_cursor));
+        // Back on the list, the diff goes on following the cursor, now over whole commits.
+        self.follow = true;
+        self.preview(cx);
+    }
+
+    /// Shows the diff of what the cursor is on, if there is one to show.
+    fn preview(&mut self, cx: &mut TabContext) {
+        if let Some(target) = self.diff_target() {
+            cx.diff.ask(target);
+        }
+    }
+
+    /// The diff for the row under the cursor: a commit's whole patch in the history (that
+    /// file's in a file's history); inside a commit, the whole commit on its own row, a
+    /// directory's files on a directory, one file on a file.
+    fn diff_target(&self) -> Option<DiffTarget> {
+        let row = self.rows.get(self.list.cursor)?;
+        let Some(opened) = &self.opened else {
+            let Row::Commit(row) = row else {
+                return None;
+            };
+            if !self.follow {
+                return None;
+            }
+            let Some(Ok(commits)) = &self.log else {
+                return None;
+            };
+            let commit = commits.get(row.index)?;
+            let (pathspecs, name) = match &commit.file {
+                Some(file) => {
+                    let mut pathspecs = vec![git::pathspec(file)];
+                    if let Some(from) = &commit.file_from {
+                        pathspecs.push(git::pathspec(from));
+                    }
+                    let base = file.rsplit('/').next().unwrap_or(file);
+                    (pathspecs, format!("{} {base}", commit.short))
+                }
+                None => (vec![".".to_string()], commit.short.clone()),
+            };
+            return Some(DiffTarget {
+                hash: commit.hash.clone(),
+                pathspecs,
+                name,
+            });
+        };
+        let below_root = |path: &Path| {
+            let inside = path.strip_prefix(&self.root).unwrap_or(path);
+            git::pathspec(&format!("{}{}", opened.prefix, inside.to_string_lossy()))
+        };
+        let mut pathspecs = Vec::new();
+        let mut name = opened.commit.short.clone();
+        match row {
+            Row::Commit(_) => {
+                if !opened.prefix.is_empty() {
+                    pathspecs.push(git::pathspec(&opened.prefix));
+                }
+            }
+            Row::Entry(entry) if entry.is_dir => {
+                pathspecs.push(below_root(&entry.path));
+                name = format!("{name} {}/", entry.name);
+            }
+            Row::Entry(entry) => {
+                pathspecs.push(below_root(&entry.path));
+                name = format!("{name} {}", entry.name);
+                let file = opened.files.iter().find(|file| file.path == entry.path);
+                if let Some(from) = file.and_then(|file| file.from.as_ref()) {
+                    pathspecs.push(git::pathspec(from));
+                }
+            }
+        }
+        Some(DiffTarget {
+            hash: opened.commit.hash.clone(),
+            pathspecs,
+            name,
+        })
+    }
+}
+
+impl TabView for CommitsTab {
+    fn label(&self) -> String {
+        match &self.showing {
+            Showing::Repository => "Commits".to_string(),
+            Showing::File(path) => {
+                let name = path.file_name().map(|name| name.to_string_lossy());
+                format!("History {}", name.unwrap_or_default())
+            }
+        }
+    }
+
+    fn rows(&self) -> &[Row] {
+        &self.rows
+    }
+
+    fn list(&self) -> &List {
+        &self.list
+    }
+
+    fn list_mut(&mut self) -> &mut List {
+        &mut self.list
+    }
+
+    fn folds(&self) -> Option<&Folds> {
+        self.opened.as_ref().map(|opened| &opened.folds)
+    }
+
+    fn folds_mut(&mut self) -> Option<&mut Folds> {
+        self.opened.as_mut().map(|opened| &mut opened.folds)
+    }
+
+    fn empty_message(&self) -> Option<Message> {
+        let (text, is_error) = match &self.log {
+            None => ("reading git log…".to_string(), false),
+            Some(Ok(_)) => ("no commits".to_string(), false),
+            Some(Err(err)) => (err.clone(), true),
+        };
+        Some(Message { text, is_error })
+    }
+
+    fn rebuild(&mut self, _editor: &mut Editor) {
+        let selected = self
+            .rows
+            .get(self.list.cursor)
+            .and_then(Row::path)
+            .map(Path::to_path_buf);
+        let mut rows = Vec::new();
+        if let Some(opened) = &self.opened {
+            rows.push(Row::Commit(CommitRow {
+                index: 0,
+                short: opened.commit.short.clone(),
+                subject: opened.commit.subject.clone(),
+                time: opened.commit.time,
+                head: true,
+            }));
+            entries::list_changed(&self.root, &opened.files, &opened.folds, &mut rows);
+        } else if let Some(Ok(commits)) = &self.log {
+            for (index, commit) in commits.iter().enumerate() {
+                rows.push(Row::Commit(CommitRow {
+                    index,
+                    short: commit.short.clone(),
+                    subject: commit.subject.clone(),
+                    time: commit.time,
+                    head: false,
+                }));
+            }
+        }
+        self.rows = rows;
+        entries::reselect(&self.rows, &mut self.list, selected.as_deref());
+    }
+
+    fn shown(&mut self, _cx: &mut TabContext) {
+        self.follow = false;
+        let wants_fresh = self.showing == Showing::Repository && !self.armed;
+        if self.log.is_none() || wants_fresh {
+            self.ask_page(0);
+        }
+    }
+
+    fn refresh(&mut self, _cx: &mut TabContext) {
+        self.ask_page(0);
+    }
+
+    fn cursor_moved(&mut self, cx: &mut TabContext) {
+        // Moving through the history is choosing a commit to look at, as a click is.
+        if self.opened.is_none() {
+            self.follow = true;
+            self.ask_next_page_if_near_end();
+        }
+        self.preview(cx);
+    }
+
+    fn step_back(&mut self, cx: &mut TabContext) -> bool {
+        if self.opened.is_some() {
+            self.leave_commit(cx);
+            return true;
+        }
+        if self.showing != Showing::Repository {
+            self.set_showing(Showing::Repository);
+            self.rebuild(cx.editor);
+            self.ask_page(0);
+            return true;
+        }
+        false
+    }
+
+    fn open(&mut self, cx: &mut TabContext, how: Activation) -> Outcome {
+        let Some(row) = self.rows.get(self.list.cursor) else {
+            return Outcome::Stay;
+        };
+        let in_history = self.opened.is_none();
+        match (row, how) {
+            // A click on a commit chooses what the diff shows and leaves the keys with the
+            // tree to go on reading down the list; Enter opens it into its files.
+            (Row::Commit(_), Activation::Click) if in_history => {
+                self.follow = true;
+                self.preview(cx);
+                Outcome::Stay
+            }
+            (Row::Commit(row), Activation::Enter) if in_history => {
+                let commit = match &self.log {
+                    Some(Ok(commits)) => commits.get(row.index).cloned(),
+                    _ => None,
+                };
+                if let Some(commit) = commit {
+                    self.open_commit(commit);
+                }
+                Outcome::Stay
+            }
+            // Inside a commit the diff already follows the cursor: a click only moves it,
+            // Enter goes over to read it, asked again in case the buffer was left meanwhile.
+            (_, Activation::Click) => {
+                self.preview(cx);
+                Outcome::Stay
+            }
+            (_, Activation::Enter) => {
+                cx.diff.forget();
+                self.preview(cx);
+                Outcome::Leave
+            }
+        }
+    }
+}
+
+/// Draws a commit on one line: its short hash when it is the opened commit's own row, its
+/// subject, and its age at the right edge.
+pub fn draw_commit(surface: &mut Surface, paint: &RowPaint, row: &CommitRow, theme: &Theme) {
+    let text_style = theme.get("ui.text");
+    // The selection's background can be the dimmed colour itself, so a selected row draws
+    // its hash and age in the text's colour.
+    let mut dim_style = if paint.selected.is_some() {
+        text_style
+    } else {
+        theme.get("ui.text.inactive")
+    };
+    let mut subject_style = text_style;
+    if row.head {
+        dim_style = dim_style.add_modifier(Modifier::BOLD);
+        subject_style = subject_style.add_modifier(Modifier::BOLD);
+    }
+    if let Some(selected) = paint.selected {
+        dim_style = dim_style.patch(selected);
+        subject_style = subject_style.patch(selected);
+    }
+    let x = paint.line.x + 1;
+    let y = paint.line.y;
+    let width = (paint.line.width as usize).saturating_sub(2);
+    let age = format_age(row.time);
+    let mut subject_x = x;
+    if row.head {
+        let (after_hash, _) = surface.set_stringn(x, y, &row.short, width, dim_style);
+        subject_x = after_hash + 1;
+    }
+    let used = (subject_x - x) as usize;
+    let subject_width = width.saturating_sub(used + age.len() + 1);
+    let paint_subject = |_: usize| -> Style { subject_style };
+    surface.set_string_truncated(
+        subject_x,
+        y,
+        &row.subject,
+        subject_width,
+        paint_subject,
+        true,
+        false,
+    );
+    if width >= used + age.len() {
+        let age_x = x + (width - age.len()) as u16;
+        surface.set_string(age_x, y, &age, dim_style);
+    }
+}
+
+/// How long ago a commit was made, in as few characters as still read: `5m`, `3h`, `2d`.
+pub fn format_age(time: i64) -> String {
+    const MINUTE: i64 = 60;
+    const HOUR: i64 = 60 * MINUTE;
+    const DAY: i64 = 24 * HOUR;
+    const MONTH: i64 = 30 * DAY;
+    const YEAR: i64 = 365 * DAY;
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(time, |since| since.as_secs() as i64);
+    let seconds = (now - time).max(0);
+    let (amount, unit) = match seconds {
+        s if s < HOUR => (s / MINUTE, "m"),
+        s if s < DAY => (s / HOUR, "h"),
+        s if s < MONTH => (s / DAY, "d"),
+        s if s < YEAR => (s / MONTH, "mo"),
+        s => (s / YEAR, "y"),
+    };
+    format!("{amount}{unit}")
+}
