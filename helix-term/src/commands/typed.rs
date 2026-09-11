@@ -3926,7 +3926,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
     TypableCommand {
         name: "log-open",
         aliases: &[],
-        doc: "Open the helix log file.",
+        doc: "Open the log file.",
         fun: open_log,
         completer: CommandCompleter::none(),
         signature: Signature {

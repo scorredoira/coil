@@ -34,9 +34,9 @@ pub fn initialize_log_file(specified_file: Option<PathBuf>) {
 ///
 /// 1. sibling directory to `CARGO_MANIFEST_DIR` (if environment variable is set)
 /// 2. subdirectory of user config directory (always included)
-/// 3. `HELIX_RUNTIME` (if environment variable is set)
+/// 3. `COIL_RUNTIME` (if environment variable is set)
 /// 4. `HELIX_DEFAULT_RUNTIME` (if environment variable is set *at build time*)
-/// 5. subdirectory of path to helix executable (always included)
+/// 5. subdirectory of path to the executable (always included)
 ///
 /// Postcondition: returns at least two paths (they might not exist).
 fn prioritize_runtime_dirs() -> Vec<PathBuf> {
@@ -53,7 +53,7 @@ fn prioritize_runtime_dirs() -> Vec<PathBuf> {
     let conf_rt_dir = config_dir().join(RT_DIR);
     rt_dirs.push(conf_rt_dir);
 
-    if let Ok(dir) = std::env::var("HELIX_RUNTIME") {
+    if let Ok(dir) = std::env::var("COIL_RUNTIME") {
         let dir = path::expand_tilde(Path::new(&dir));
         rt_dirs.push(path::normalize(dir));
     }
@@ -121,7 +121,7 @@ pub fn config_dir() -> PathBuf {
     // TODO: allow env var override
     let strategy = choose_base_strategy().expect("Unable to find the config directory!");
     let mut path = strategy.config_dir();
-    path.push("helix");
+    path.push("coil");
     path
 }
 
@@ -129,14 +129,14 @@ pub fn cache_dir() -> PathBuf {
     // TODO: allow env var override
     let strategy = choose_base_strategy().expect("Unable to find the cache directory!");
     let mut path = strategy.cache_dir();
-    path.push("helix");
+    path.push("coil");
     path
 }
 
 pub fn data_dir() -> PathBuf {
     let strategy = choose_base_strategy().expect("Unable to find the data directory!");
     let mut path = strategy.data_dir();
-    path.push("helix");
+    path.push("coil");
     path
 }
 
@@ -149,11 +149,11 @@ pub fn log_file() -> PathBuf {
 }
 
 pub fn workspace_config_file() -> PathBuf {
-    find_workspace().0.join(".helix").join("config.toml")
+    find_workspace().0.join(".coil").join("config.toml")
 }
 
 pub fn workspace_lang_config_file() -> PathBuf {
-    find_workspace().0.join(".helix").join("languages.toml")
+    find_workspace().0.join(".coil").join("languages.toml")
 }
 
 pub fn lang_config_file() -> PathBuf {
@@ -161,7 +161,7 @@ pub fn lang_config_file() -> PathBuf {
 }
 
 pub fn default_log_file() -> PathBuf {
-    cache_dir().join("helix.log")
+    cache_dir().join("coil.log")
 }
 
 /// Merge two TOML documents, merging values from `right` onto `left`
@@ -265,7 +265,7 @@ pub fn find_workspace_in(dir: impl AsRef<Path>) -> (PathBuf, bool) {
         if ancestor.join(".git").exists()
             || ancestor.join(".svn").exists()
             || ancestor.join(".jj").exists()
-            || ancestor.join(".helix").exists()
+            || ancestor.join(".coil").exists()
         {
             return (ancestor.to_owned(), false);
         }

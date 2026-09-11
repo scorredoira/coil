@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Takes the screenshots in fork/screenshots from the built editor
-# (target/release/hx), driving it inside tmux over a throwaway clone of this
+# (target/release/coil), driving it inside tmux over a throwaway clone of this
 # repository, so each picture shows the fork exactly as it is.
 #
 # Needs tmux, git and python3 with Pillow. Build first: cargo build --release
@@ -8,23 +8,26 @@ set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "$here")
-hx="$repo/target/release/hx"
+coil="$repo/target/release/coil"
 out="$here/screenshots"
 socket=fork-screenshots
 work=$(mktemp -d)
 trap 'tmux -L "$socket" kill-server 2>/dev/null || true; rm -rf "$work"' EXIT
 
-if [[ ! -x "$hx" ]]; then
-	echo "$hx is not built: cargo build --release" >&2
+if [[ ! -x "$coil" ]]; then
+	echo "$coil is not built: cargo build --release" >&2
 	exit 1
 fi
 
+# A partial clone fetches the blobs a followed history needs only when asked, and
+# the shared clone below cannot ask: ask here, where it can.
+git -C "$repo" log --follow --format=%h -- helix-term/src/ui/picker.rs >/dev/null
 git clone --quiet --shared "$repo" "$work/demo"
-mkdir -p "$work/data" "$work/config/helix" "$out"
-cp "$here/demo-config.toml" "$work/config/helix/config.toml"
+mkdir -p "$work/data" "$work/config/coil" "$out"
+cp "$here/demo-config.toml" "$work/config/coil/config.toml"
 # The sidebar as wide as a drag of its separator would leave it, remembered.
-mkdir -p "$work/data/helix"
-echo 'width = 40' >"$work/data/helix/sidebar.toml"
+mkdir -p "$work/data/coil"
+echo 'width = 40' >"$work/data/coil/sidebar.toml"
 
 demo="$work/demo"
 
@@ -34,7 +37,7 @@ start() {
 	sleep 0.3
 	tmux -L "$socket" -f /dev/null new-session -d -s shot -x 132 -y 36 -c "$demo" \
 		"env XDG_DATA_HOME=$work/data XDG_CONFIG_HOME=$work/config \
-		HELIX_RUNTIME=$repo/runtime COLORTERM=truecolor $hx $*; sleep 600"
+		COIL_RUNTIME=$repo/runtime COLORTERM=truecolor $coil $*; sleep 600"
 	sleep 2
 }
 
@@ -95,3 +98,22 @@ typed set_message
 keys Tab
 typed 'helix-term/**'
 shoot search 2
+
+start --vsplit helix-term/src/ui/sidebar/mod.rs helix-term/src/ui/sidebar/tab.rs
+keys Space T
+keys Escape
+shoot splits
+
+start helix-term/src/ui/picker.rs
+keys Space H
+shoot history 2
+
+# A working tree with something to show: a file changed, one added, one gone.
+echo "// a line nobody has committed" >>"$demo/helix-term/src/ui/sidebar/list.rs"
+echo "notes" >"$demo/NOTES.md"
+git -C "$demo" add NOTES.md
+git -C "$demo" rm --quiet helix-term/src/ui/sidebar/tab.rs
+start + helix-term/src/ui/sidebar/list.rs
+keys Space T
+keys Tab
+shoot changes 2

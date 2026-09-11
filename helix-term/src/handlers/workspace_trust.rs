@@ -27,12 +27,12 @@ pub(super) fn register_hooks(_handlers: &Handlers) {
             (doc.workspace_root().to_path_buf(), doc.servers_to_load())
         };
 
-        // Stale: `.helix/` was edited since the user last ran `trust`. LSPs keep
+        // Stale: `.coil/` was edited since the user last ran `trust`. LSPs keep
         // running (binaries are unchanged), but local config is dropped.
         // Note: must use `status` (raw) not `query`: `query` collapses Stale to Untrusted via `demote_for_query`.
         if event.editor.workspace_trust.status(&workspace) == TrustStatus::Stale {
             event.editor.set_status(
-                "Workspace `.helix/` config changed since `:workspace-trust`. \
+                "Workspace `.coil/` config changed since `:workspace-trust`. \
                  Local config not loaded. Run `:workspace-trust` to re-allow.",
             );
             return Ok(());
@@ -73,7 +73,7 @@ fn prompt(workspace: PathBuf, compositor: &mut Compositor) {
 
 const TRUST_MESSAGE: &str = "Trust this workspace?
 
-Trusted workspaces may load local Helix config files (`.helix/*`) and auto-start language servers. \
+Trusted workspaces may load local config files (`.coil/*`) and auto-start language servers. \
 Both can execute arbitrary code. Only trust workspaces whose contents you have inspected.";
 
 #[derive(Default, Clone, Copy, Debug)]

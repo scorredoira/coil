@@ -247,7 +247,7 @@ pub fn file_picker(editor: &Editor, root: PathBuf) -> FilePicker {
         .max_depth(config.file_picker.max_depth)
         .filter_entry(move |entry| filter_picker_entry(entry, &absolute_root, dedup_symlinks))
         .add_custom_ignore_filename(helix_loader::config_dir().join("ignore"))
-        .add_custom_ignore_filename(".helix/ignore")
+        .add_custom_ignore_filename(".coil/ignore")
         .types(get_excluded_types())
         .build()
         .filter_map(|entry| {
@@ -394,7 +394,7 @@ pub(crate) fn directory_entries(
     if helix_ignore_files {
         walk_builder
             .add_custom_ignore_filename(helix_loader::config_dir().join("ignore"))
-            .add_custom_ignore_filename(".helix/ignore");
+            .add_custom_ignore_filename(".coil/ignore");
     }
 
     let mut content: Vec<(PathBuf, bool)> = walk_builder

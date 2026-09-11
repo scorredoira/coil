@@ -2727,7 +2727,7 @@ fn global_search(cx: &mut Context) {
                     filter_picker_entry(entry, &absolute_root, dedup_symlinks)
                 })
                 .add_custom_ignore_filename(helix_loader::config_dir().join("ignore"))
-                .add_custom_ignore_filename(".helix/ignore")
+                .add_custom_ignore_filename(".coil/ignore")
                 .overrides(overrides)
                 .build_parallel()
                 .run(|| {
@@ -3058,12 +3058,12 @@ fn load_search_filters() -> anyhow::Result<SearchFilters> {
     toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
 }
 
-/// Written aside and renamed over, so another helix reading it never sees half.
+/// Written aside and renamed over, so another instance reading it never sees half.
 fn save_search_filters(filters: &SearchFilters) -> anyhow::Result<()> {
     let path = search_filters_file();
     let dir = path
         .parent()
-        .expect("the file sits in helix's data directory");
+        .expect("the file sits in the data directory");
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
 
     let text = toml::to_string(filters)?;
