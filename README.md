@@ -25,7 +25,8 @@ as it is; this fork sits on top of its `master`.
 
 ### A sidebar file tree
 
-`Space t` shows or hides it, `Space T` focuses it. It follows the file you are
+`Space t` shows or hides it, `Space T` focuses it; started on a file
+(`hx foo.ts`), the editor opens without it. It follows the file you are
 editing, and inside it `j`/`k` move, `Enter` opens, `a` creates, `r` renames,
 `d` deletes. A click opens a row, the wheel scrolls, and dragging the line
 between the tree and the editor resizes it: the width is remembered. Buffers

@@ -258,7 +258,7 @@ The file tree is the sidebar on the left listing the workspace, the one `<space>
 
 | Key | Description | Default |
 |--|--|---------|
-| `open` | Whether the tree is shown when the editor starts | `true` |
+| `open` | Whether the tree is shown when the editor starts on the project, with no file named on the command line; started on a file, it opens without the tree | `true` |
 | `width` | Width of the tree in columns | `32` |
 
 ### `[editor.buffer-picker]` Section
