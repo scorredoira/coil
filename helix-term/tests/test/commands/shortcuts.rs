@@ -11,6 +11,7 @@ fn with_shortcuts() -> AppBuilder {
         keymap!({"Normal mode"
             "C-g" => goto_line_prompt,
             "C-f" => search_in_file,
+            "C-q" => quit_saving,
             "backspace" => delete_selection_or_previous_char,
         }),
     );
@@ -201,7 +202,29 @@ async fn leaving_a_file_saves_it() -> anyhow::Result<()> {
     .await?;
 
     helpers::run_event_loop_until_idle(&mut app).await;
-    helpers::assert_file_has_content(&mut file, "hello")?;
+    helpers::assert_file_has_content(&mut file, &LineFeedHandling::Native.apply("hello\n"))?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn quitting_writes_every_file_first() -> anyhow::Result<()> {
+    let mut file = tempfile::NamedTempFile::new()?;
+    let mut app = with_shortcuts().with_file(file.path(), None).build()?;
+
+    test_key_sequence(&mut app, Some("ihello<esc><C-q>"), None, true).await?;
+
+    helpers::assert_file_has_content(&mut file, &LineFeedHandling::Native.apply("hello\n"))?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn quitting_asks_about_what_cannot_be_written() -> anyhow::Result<()> {
+    // A buffer with no file behind it: quitting would lose it, so the editor stays.
+    let mut app = with_shortcuts().build()?;
+
+    test_key_sequence(&mut app, Some("ihello<esc><C-q>"), None, false).await?;
 
     Ok(())
 }

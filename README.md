@@ -110,7 +110,7 @@ you already know:
 | `F12` / `Shift-F12` | Go to the definition / to the references |
 | `F2` | Rename the symbol |
 | `F8` | Next diagnostic |
-| `Ctrl-q` | Quit |
+| `Ctrl-q` | Save everything and quit |
 | `Space Space` | Search and replace across the project (`Space /` too) |
 
 On a Mac `Cmd-c` copies and `Cmd-s` saves as well, and a `Cmd` or `Ctrl` key
@@ -123,8 +123,16 @@ mode, and none of it touches how selections work outside it, where they are what
 the commands act on.
 
 Your work is saved for you: leave a file — another tab, another window, or the
-terminal itself losing focus — and it is written to disk. Saving while you type
+terminal itself losing focus — and it is written to disk. Closing a tab writes
+it too, and `Ctrl-q` writes everything before it quits. Saving while you type
 (`auto-save.after-delay`) stays off.
+
+The only thing that cannot be written for you is a buffer with no file behind
+it, and that one asks, in the middle of the screen: arrows or `Tab` walk the
+answers, `Enter` takes the one in focus, a click takes the one it lands on, and
+`Escape` always answers no.
+
+![The question asked before quitting with something unsaved](fork/screenshots/quit.png)
 
 And the editor starts the way you would set it up: long lines wrap,
 indentation guides show, open files are tabs, the cursor is a bar while

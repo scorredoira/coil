@@ -118,6 +118,16 @@ keys Enter
 keys z t
 shoot preview
 
+# What cannot be saved for you is asked about, in the middle of the screen.
+start README.md
+typed ":new"
+keys Enter
+keys i
+typed "notes I never gave a file to"
+keys Escape
+keys C-q
+shoot quit
+
 start --vsplit helix-term/src/ui/sidebar/mod.rs helix-term/src/ui/sidebar/tab.rs
 keys Space T
 keys Escape

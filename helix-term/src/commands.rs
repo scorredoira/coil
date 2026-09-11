@@ -420,6 +420,7 @@ impl MappableCommand {
         sidebar_focus, "Focus the sidebar, opening it if closed",
         sidebar_toggle, "Show or hide the sidebar",
         markdown_preview_toggle, "Show or hide the Markdown preview beside the file",
+        quit_saving, "Save every file that has one and quit, asking about what cannot be saved",
         file_history, "Show the history of the current file in the sidebar",
         blame_line, "Show who last changed the current line; again opens that commit",
         code_action, "Perform code action",
@@ -4229,6 +4230,61 @@ fn sidebar_focus(_cx: &mut Context) {
         let editor_view = compositor.find::<ui::EditorView>().unwrap();
         editor_view.sidebar.focus(editor);
     });
+}
+
+/// Runs a typable command as if it had been typed, for the few places that stand in for
+/// one: an answer to a dialog, a click on a tab.
+pub(crate) fn run_typable(cx: &mut compositor::Context, name: &str) {
+    let command = typed::TYPABLE_COMMAND_MAP
+        .get(name)
+        .expect("the command is one of ours");
+
+    if let Err(err) = typed::execute_command(cx, command, "", PromptEvent::Validate) {
+        cx.editor.set_error(err.to_string());
+    }
+}
+
+/// The files that are modified and have nowhere to be written: only these need asking
+/// about before anything closes.
+pub(crate) fn unsaveable(editor: &Editor) -> Vec<String> {
+    editor
+        .documents()
+        .filter(|doc| doc.is_modified() && doc.path().is_none())
+        .map(|doc| doc.display_name().to_string())
+        .collect()
+}
+
+/// Ctrl-q: what can be written is written and the editor closes. What cannot — a buffer
+/// with no file — is a question, and it is asked in the middle of the screen.
+fn quit_saving(cx: &mut Context) {
+    let unnamed = unsaveable(cx.editor);
+    if unnamed.is_empty() {
+        cx.callback.push(Box::new(|_compositor, cx| {
+            run_typable(cx, "write-quit-all");
+        }));
+        return;
+    }
+
+    let lines = vec![
+        format!(
+            "{} has changes and no file to write them to.",
+            unnamed.join(", ")
+        ),
+        "Everything else is saved.".to_string(),
+    ];
+    let answers = vec![
+        ui::confirm::Answer::new(
+            "Quit without saving",
+            Box::new(|cx: &mut compositor::Context| run_typable(cx, "quit-all!")),
+        )
+        .destructive(),
+        ui::confirm::Answer::new("Cancel", Box::new(|_| {})),
+    ];
+    let dialog = ui::confirm::Confirm::new("Unsaved changes", lines, answers);
+
+    cx.callback.push(Box::new(|compositor, _| {
+        compositor.push(Box::new(dialog));
+    }));
 }
 
 fn markdown_preview_toggle(_cx: &mut Context) {

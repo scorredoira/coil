@@ -11,6 +11,7 @@ use arc_swap::access::Access;
 
 use helix_event::{register_hook, send_blocking};
 use helix_view::{
+    doc_mut,
     document::Mode,
     events::{DocumentDidChange, DocumentFocusLost},
     handlers::{AutoSaveEvent, Handlers},
@@ -112,6 +113,20 @@ fn save_on_leaving(editor: &mut Editor, doc: DocumentId) {
     };
     if !document.is_modified() || document.path().is_none() {
         return;
+    }
+
+    // Tidied the same way `:w` tidies, so a file is never written two different ways.
+    let view = editor.get_synced_view_id(doc);
+    let trim_final_newlines = editor.config().trim_final_newlines;
+    let document = doc_mut!(editor, &doc);
+    if document.trim_trailing_whitespace() {
+        commands::typed::trim_trailing_whitespace(document, view);
+    }
+    if trim_final_newlines {
+        commands::typed::trim_final_newlines(document, view);
+    }
+    if document.insert_final_newline() {
+        commands::typed::insert_final_newline(document, view);
     }
 
     if let Err(err) = editor.save::<std::path::PathBuf>(doc, None, false) {

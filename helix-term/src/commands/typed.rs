@@ -463,7 +463,7 @@ fn write_impl(
 }
 
 /// Trim all whitespace preceding line-endings in a document.
-fn trim_trailing_whitespace(doc: &mut Document, view_id: ViewId) {
+pub(crate) fn trim_trailing_whitespace(doc: &mut Document, view_id: ViewId) {
     let text = doc.text();
     let mut pos = 0;
     let transaction = Transaction::delete(
@@ -491,7 +491,7 @@ fn trim_trailing_whitespace(doc: &mut Document, view_id: ViewId) {
 }
 
 /// Trim any extra line-endings after the final line-ending.
-fn trim_final_newlines(doc: &mut Document, view_id: ViewId) {
+pub(crate) fn trim_final_newlines(doc: &mut Document, view_id: ViewId) {
     let rope = doc.text();
     let mut text = rope.slice(..);
     let mut total_char_len = 0;
@@ -512,7 +512,7 @@ fn trim_final_newlines(doc: &mut Document, view_id: ViewId) {
 }
 
 /// Ensure that the document is terminated with a line ending.
-fn insert_final_newline(doc: &mut Document, view_id: ViewId) {
+pub(crate) fn insert_final_newline(doc: &mut Document, view_id: ViewId) {
     let text = doc.text();
     if text.len_chars() > 0 && line_ending::get_line_ending(&text.slice(..)).is_none() {
         let eof = Selection::point(text.len_chars());
