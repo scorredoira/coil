@@ -1,8 +1,11 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::time::{Duration, Instant};
 
 use helix_view::editor::Action;
-use helix_view::graphics::{Modifier, Rect};
+use helix_view::graphics::{Modifier, Rect, Style};
 use helix_view::input::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use helix_view::keyboard::{KeyCode, KeyModifiers};
 use helix_view::Editor;
@@ -28,13 +31,48 @@ pub struct FileTree {
     /// The document the tree last revealed, so a buffer switch is noticed at render time.
     revealed: Option<PathBuf>,
     area: Rect,
+    tab: Tab,
+    /// The Changes tab opens every directory, so what it remembers is the ones closed.
+    collapsed: HashSet<PathBuf>,
+    /// What the last `git status` answered: the changed paths, or why it could not say.
+    changes: Option<ChangesAnswer>,
+    pending: Option<Receiver<ChangesAnswer>>,
+    queried_at: Option<Instant>,
+    /// Where each tab's label was drawn on the header line, for a click to land on.
+    tab_columns: [(u16, u16); 2],
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Files,
+    Changes,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Change {
+    Modified,
+    Added,
+    Deleted,
+    Renamed,
+}
+
+type ChangesAnswer = Result<Vec<(PathBuf, Change)>, String>;
+
+/// How often the Changes tab asks git again while it is on screen.
+const CHANGES_REFRESH: Duration = Duration::from_secs(2);
 
 struct Row {
     path: PathBuf,
     name: String,
     is_dir: bool,
     depth: usize,
+    change: Option<Change>,
+}
+
+#[derive(Default)]
+struct ChangeDir {
+    dirs: BTreeMap<String, ChangeDir>,
+    files: BTreeMap<String, Change>,
 }
 
 impl FileTree {
@@ -50,6 +88,12 @@ impl FileTree {
             focused: false,
             revealed: None,
             area: Rect::default(),
+            tab: Tab::Files,
+            collapsed: HashSet::new(),
+            changes: None,
+            pending: None,
+            queried_at: None,
+            tab_columns: [(0, 0); 2],
         }
     }
 
@@ -70,7 +114,10 @@ impl FileTree {
     fn rebuild(&mut self, editor: &mut Editor) {
         let selected = self.rows.get(self.cursor).map(|row| row.path.clone());
         let mut rows = Vec::new();
-        self.list(&self.root.clone(), 0, editor, &mut rows);
+        match self.tab {
+            Tab::Files => self.list(&self.root.clone(), 0, editor, &mut rows),
+            Tab::Changes => self.list_changes(&mut rows),
+        }
         self.rows = rows;
         if let Some(selected) = selected {
             self.select(&selected);
@@ -101,11 +148,149 @@ impl FileTree {
                 name,
                 is_dir,
                 depth,
+                change: None,
             });
             if expanded {
                 self.list(&path, depth + 1, editor, rows);
             }
         }
+    }
+
+    /// The rows of the Changes tab: only what `git status` names, and the directories that
+    /// hold it, a chain of directories with nothing else in them folded into one row.
+    fn list_changes(&self, rows: &mut Vec<Row>) {
+        let Some(Ok(changes)) = &self.changes else {
+            return;
+        };
+        let mut top = ChangeDir::default();
+        for (path, change) in changes {
+            let Ok(relative) = path.strip_prefix(&self.root) else {
+                continue;
+            };
+            let mut parts: Vec<String> = relative
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                .collect();
+            let Some(file) = parts.pop() else {
+                continue;
+            };
+            let mut dir = &mut top;
+            for part in parts {
+                dir = dir.dirs.entry(part).or_default();
+            }
+            dir.files.insert(file, *change);
+        }
+        self.list_change_dir(&top, &self.root, 0, rows);
+    }
+
+    fn list_change_dir(&self, dir: &ChangeDir, path: &Path, depth: usize, rows: &mut Vec<Row>) {
+        for (name, child) in &dir.dirs {
+            let mut name = name.clone();
+            let mut child = child;
+            let mut child_path = path.join(&name);
+            while child.files.is_empty() && child.dirs.len() == 1 {
+                let Some((next_name, next)) = child.dirs.first_key_value() else {
+                    break;
+                };
+                name = format!("{name}/{next_name}");
+                child_path = child_path.join(next_name);
+                child = next;
+            }
+            let expanded = !self.collapsed.contains(&child_path);
+            rows.push(Row {
+                path: child_path.clone(),
+                name,
+                is_dir: true,
+                depth,
+                change: None,
+            });
+            if expanded {
+                self.list_change_dir(child, &child_path, depth + 1, rows);
+            }
+        }
+        for (name, change) in &dir.files {
+            rows.push(Row {
+                path: path.join(name),
+                name: name.clone(),
+                is_dir: false,
+                depth,
+                change: Some(*change),
+            });
+        }
+    }
+
+    fn is_expanded(&self, path: &Path) -> bool {
+        match self.tab {
+            Tab::Files => self.expanded.contains(path),
+            Tab::Changes => !self.collapsed.contains(path),
+        }
+    }
+
+    fn set_expanded(&mut self, path: PathBuf, expanded: bool) {
+        match (self.tab, expanded) {
+            (Tab::Files, true) => {
+                self.expanded.insert(path);
+            }
+            (Tab::Files, false) => {
+                self.expanded.remove(&path);
+            }
+            (Tab::Changes, true) => {
+                self.collapsed.remove(&path);
+            }
+            (Tab::Changes, false) => {
+                self.collapsed.insert(path);
+            }
+        }
+    }
+
+    fn switch_tab(&mut self, tab: Tab, editor: &mut Editor) {
+        if self.tab == tab {
+            return;
+        }
+        self.tab = tab;
+        self.rebuild(editor);
+        self.revealed = None;
+    }
+
+    /// Takes the answer of a `git status` that finished, and starts the next one when the
+    /// last is older than the refresh interval. Returns whether the changes moved.
+    fn poll_changes(&mut self) -> bool {
+        let mut moved = false;
+        if let Some(pending) = &self.pending {
+            match pending.try_recv() {
+                Ok(answer) => {
+                    moved = self.changes.as_ref() != Some(&answer);
+                    self.changes = Some(answer);
+                    self.pending = None;
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    self.changes = Some(Err("git status stopped without answering".into()));
+                    self.pending = None;
+                    moved = true;
+                }
+            }
+        }
+        let stale = self
+            .queried_at
+            .is_none_or(|at| at.elapsed() >= CHANGES_REFRESH);
+        if self.pending.is_none() && stale {
+            let (sender, receiver) = mpsc::channel();
+            let root = self.root.clone();
+            std::thread::spawn(move || {
+                let answer = query_changes(&root);
+                if sender.send(answer).is_err() {
+                    return;
+                }
+                helix_event::request_redraw();
+                // The redraw that follows is what asks again, for as long as the tab is shown.
+                std::thread::sleep(CHANGES_REFRESH);
+                helix_event::request_redraw();
+            });
+            self.pending = Some(receiver);
+            self.queried_at = Some(Instant::now());
+        }
+        moved
     }
 
     /// Expands the ancestors of the focused document and moves the cursor onto it.
@@ -116,6 +301,11 @@ impl FileTree {
         };
         self.revealed = Some(path.clone());
         if !path.starts_with(&self.root) {
+            return;
+        }
+        if self.tab == Tab::Changes {
+            self.select(&path);
+            self.center_cursor();
             return;
         }
         let mut dir = path.parent();
@@ -187,9 +377,8 @@ impl FileTree {
             return;
         }
         let path = row.path.clone();
-        if !self.expanded.remove(&path) {
-            self.expanded.insert(path);
-        }
+        let expanded = self.is_expanded(&path);
+        self.set_expanded(path, !expanded);
         self.rebuild(editor);
     }
 
@@ -197,10 +386,21 @@ impl FileTree {
         let Some(row) = self.rows.get(self.cursor) else {
             return;
         };
-        if !row.is_dir || self.expanded.contains(&row.path) {
+        if !row.is_dir || self.is_expanded(&row.path) {
             return;
         }
-        self.expanded.insert(row.path.clone());
+        self.set_expanded(row.path.clone(), true);
+        self.rebuild(editor);
+    }
+
+    fn collapse_all(&mut self, editor: &mut Editor) {
+        match self.tab {
+            Tab::Files => self.expanded.clear(),
+            Tab::Changes => {
+                let dirs = self.rows.iter().filter(|row| row.is_dir);
+                self.collapsed.extend(dirs.map(|row| row.path.clone()));
+            }
+        }
         self.rebuild(editor);
     }
 
@@ -210,7 +410,8 @@ impl FileTree {
         let Some(row) = self.rows.get(self.cursor) else {
             return;
         };
-        if row.is_dir && self.expanded.remove(&row.path) {
+        if row.is_dir && self.is_expanded(&row.path) {
+            self.set_expanded(row.path.clone(), false);
             self.rebuild(editor);
             return;
         }
@@ -238,6 +439,10 @@ impl FileTree {
             return false;
         }
         let path = row.path.clone();
+        if row.change == Some(Change::Deleted) {
+            editor.set_status(format!("{} is deleted", self.relative(&path)));
+            return false;
+        }
         if let Err(err) = editor.open(&path, Action::Replace) {
             editor.set_error(format!("unable to open \"{}\": {}", path.display(), err));
             return false;
@@ -300,11 +505,18 @@ impl FileTree {
                 self.collapse_or_parent(editor);
             }
             (KeyCode::Char('H'), KeyModifiers::NONE) => {
-                self.expanded.clear();
-                self.rebuild(editor);
+                self.collapse_all(editor);
             }
             (KeyCode::Char('R'), KeyModifiers::NONE) => {
+                self.queried_at = None;
                 self.rebuild(editor);
+            }
+            (KeyCode::Tab, _) => {
+                let tab = match self.tab {
+                    Tab::Files => Tab::Changes,
+                    Tab::Changes => Tab::Files,
+                };
+                self.switch_tab(tab, editor);
             }
             (KeyCode::Char('a'), KeyModifiers::NONE) => {
                 self.prompt_new(cx);
@@ -331,6 +543,7 @@ impl FileTree {
             self.expanded.insert(current.to_path_buf());
             dir = current.parent();
         }
+        self.queried_at = None;
         self.rebuild(editor);
         self.select(path);
     }
@@ -487,9 +700,17 @@ impl FileTree {
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 self.focused = true;
-                // The first line is the root header, not a row.
+                // The first line holds the tabs, not a row.
                 let line = event.row.saturating_sub(self.area.y) as usize;
                 if line == 0 {
+                    let tabs = [Tab::Files, Tab::Changes];
+                    let hit = tabs
+                        .into_iter()
+                        .zip(self.tab_columns)
+                        .find(|(_, (from, to))| event.column >= *from && event.column < *to);
+                    if let Some((tab, _)) = hit {
+                        self.switch_tab(tab, editor);
+                    }
                     return EventResult::Consumed(None);
                 }
                 let index = self.scroll + line - 1;
@@ -519,6 +740,16 @@ impl FileTree {
         self.area = area;
         self.page = area.height.saturating_sub(1).max(1) as usize;
 
+        if self.tab == Tab::Changes {
+            let first_answer = self.changes.is_none();
+            if self.poll_changes() {
+                self.rebuild(editor);
+                // The tab opened empty, so the current file could not be marked until now.
+                if first_answer {
+                    self.revealed = None;
+                }
+            }
+        }
         let current = doc!(editor).path().map(Path::to_path_buf);
         if current.is_some() && current != self.revealed {
             self.reveal_current(editor);
@@ -540,19 +771,51 @@ impl FileTree {
             surface.set_string(area.right() - 1, y, "│", separator_style);
         }
 
-        let root_name = self
-            .root
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| self.root.to_string_lossy().into_owned());
         let header_style = directory_style.add_modifier(Modifier::BOLD);
-        surface.set_stringn(
-            area.x + 1,
-            area.y,
-            &root_name,
-            content_width.saturating_sub(1),
-            header_style,
-        );
+        let inactive_style = theme.get("ui.text.inactive");
+        let changes_label = match &self.changes {
+            Some(Ok(changes)) if !changes.is_empty() => format!("Changes {}", changes.len()),
+            _ => "Changes".to_string(),
+        };
+        let labels = [
+            (Tab::Files, "Files".to_string()),
+            (Tab::Changes, changes_label),
+        ];
+        let mut x = area.x + 1;
+        for (index, (tab, label)) in labels.iter().enumerate() {
+            let style = if *tab == self.tab {
+                header_style
+            } else {
+                inactive_style
+            };
+            let room = (area.right() - 1).saturating_sub(x) as usize;
+            let (end, _) = surface.set_stringn(x, area.y, label, room, style);
+            self.tab_columns[index] = (x, end);
+            x = end + 2;
+        }
+
+        if self.tab == Tab::Changes && self.rows.is_empty() {
+            let message = match &self.changes {
+                None => "reading git status…".to_string(),
+                Some(Ok(_)) => "no changes".to_string(),
+                Some(Err(err)) => err.clone(),
+            };
+            let style = match &self.changes {
+                Some(Err(_)) => theme.get("error"),
+                _ => inactive_style,
+            };
+            let width = content_width.saturating_sub(1);
+            surface.set_string_truncated(
+                area.x + 1,
+                area.y + 1,
+                &message,
+                width,
+                |_| style,
+                true,
+                false,
+            );
+            return;
+        }
 
         let rows = self
             .rows
@@ -562,10 +825,11 @@ impl FileTree {
             .take(self.page);
         for (index, row) in rows {
             let y = area.y + 1 + (index - self.scroll) as u16;
+            let change_style = row.change.map(|change| change_style(change, theme));
             let mut style = if row.is_dir {
                 directory_style
             } else {
-                text_style
+                change_style.unwrap_or(text_style)
             };
             if current.as_deref() == Some(row.path.as_path()) {
                 style = style.add_modifier(Modifier::BOLD);
@@ -577,7 +841,7 @@ impl FileTree {
             }
             let marker = if !row.is_dir {
                 "  "
-            } else if self.expanded.contains(&row.path) {
+            } else if self.is_expanded(&row.path) {
                 "▾ "
             } else {
                 "▸ "
@@ -585,10 +849,107 @@ impl FileTree {
             let indent = 1 + row.depth * 2;
             let label = format!("{}{}", marker, row.name);
             let x = area.x + indent as u16;
-            let width = content_width.saturating_sub(indent);
+            // A changed file keeps its letter in the last columns, clear of the name.
+            let letter_room = if row.change.is_some() { 3 } else { 0 };
+            let width = content_width.saturating_sub(indent + letter_room);
             surface.set_string_truncated(x, y, &label, width, |_| style, true, false);
+            if let Some(change) = row.change {
+                let mut letter_style = change_style.unwrap_or(text_style);
+                if index == self.cursor && self.focused {
+                    letter_style = letter_style.patch(selected_style);
+                }
+                let letter_x = area.right().saturating_sub(3).max(area.x);
+                surface.set_string(letter_x, y, change.letter(), letter_style);
+            }
         }
     }
+}
+
+impl Change {
+    /// What one `git status` entry says of a file, both columns read as one: staged or not
+    /// makes no difference to a tree that only shows what changed.
+    fn from_status(index: u8, worktree: u8) -> Self {
+        let either = |code: u8| index == code || worktree == code;
+        if either(b'?') {
+            Change::Added
+        } else if either(b'D') {
+            Change::Deleted
+        } else if either(b'R') {
+            Change::Renamed
+        } else if either(b'A') || either(b'C') {
+            Change::Added
+        } else {
+            Change::Modified
+        }
+    }
+
+    fn letter(self) -> &'static str {
+        match self {
+            Change::Modified => "M",
+            Change::Added => "A",
+            Change::Deleted => "D",
+            Change::Renamed => "R",
+        }
+    }
+}
+
+fn change_style(change: Change, theme: &helix_view::Theme) -> Style {
+    match change {
+        Change::Added => theme.get("diff.plus"),
+        Change::Deleted => theme.get("diff.minus"),
+        Change::Modified | Change::Renamed => theme.get("diff.delta"),
+    }
+}
+
+/// Asks git itself, so the tab lists exactly what `git status` does, ignore rules included.
+fn query_changes(root: &Path) -> ChangesAnswer {
+    // Porcelain paths are relative to the repository's top, and the tree may sit below it.
+    let prefix = run_git(root, &["rev-parse", "--show-prefix"])?;
+    let prefix = String::from_utf8_lossy(&prefix).trim_end().to_string();
+    let status = run_git(
+        root,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    )?;
+
+    let mut changes = Vec::new();
+    let mut entries = status.split(|byte| *byte == 0);
+    while let Some(entry) = entries.next() {
+        if entry.is_empty() {
+            continue;
+        }
+        if entry.len() < 4 {
+            return Err(format!(
+                "git status: unreadable entry {:?}",
+                String::from_utf8_lossy(entry)
+            ));
+        }
+        let change = Change::from_status(entry[0], entry[1]);
+        // A rename or a copy carries the path it came from as the next entry.
+        if matches!(entry[0], b'R' | b'C') || matches!(entry[1], b'R' | b'C') {
+            entries.next();
+        }
+        let path = String::from_utf8_lossy(&entry[3..]);
+        let Some(inside) = path.strip_prefix(prefix.as_str()) else {
+            continue;
+        };
+        changes.push((root.join(inside), change));
+    }
+    Ok(changes)
+}
+
+fn run_git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .map_err(|err| format!("git: {err}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let reason = stderr.lines().next().unwrap_or("failed").to_string();
+        return Err(format!("git {}: {reason}", args[0]));
+    }
+    Ok(output.stdout)
 }
 
 fn create_file(path: &Path) -> std::io::Result<()> {
