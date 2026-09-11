@@ -77,9 +77,12 @@ shoot tree
 
 keys Tab Tab
 keys Home
-down "$(commit_row "bufferline: each tab carries a cross")"
+# Into a commit, so the editor shows its diff, and back out to the list, which
+# keeps the cursor on it.
+down "$(commit_row "render: a diff draws no indentation guides")"
 keys Enter
-keys j j
+sleep 1.5
+keys Escape
 shoot commits 2
 
 start helix-term/src/ui/file_tree.rs

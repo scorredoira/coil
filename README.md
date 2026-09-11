@@ -51,7 +51,7 @@ editor shows the diff of whatever the cursor is on: the whole commit, a
 directory, one file. `Esc` goes back. `Space H` narrows it to the current
 file's history, following renames.
 
-![Browsing a commit: its files in the sidebar, the diff of the one under the cursor on the right](fork/screenshots/commits.png)
+![The history in the sidebar, the diff of the selected commit on the right](fork/screenshots/commits.png)
 
 ### Who changed this line
 
