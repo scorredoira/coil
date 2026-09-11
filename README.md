@@ -46,9 +46,9 @@ on screen: the files are changed but left unsaved, and one undo takes it back.
 
 The **Changes** tab (`Tab` inside the tree) lists what `git status` names, each
 file with its letter: modified, added, deleted, renamed. The **Commits** tab
-lists the history; `Enter` on a commit lists the files it touched, and the
-editor shows the diff of whatever the cursor is on: the whole commit, a
-directory, one file. `Esc` goes back. `Space H` narrows it to the current
+lists the history: a click on a commit shows its whole diff in the editor, and
+`Enter` or a double click lists the files it touched, the diff then following
+whatever the cursor is on: a directory, one file. `Esc` goes back. `Space H` narrows it to the current
 file's history, following renames.
 
 ![The history in the sidebar, the diff of the selected commit on the right](fork/screenshots/commits.png)

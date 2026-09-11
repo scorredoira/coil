@@ -77,12 +77,8 @@ shoot tree
 
 keys Tab Tab
 keys Home
-# Into a commit, so the editor shows its diff, and back out to the list, which
-# keeps the cursor on it.
+# Moving onto a commit shows its whole diff in the editor.
 down "$(commit_row "render: a diff draws no indentation guides")"
-keys Enter
-sleep 1.5
-keys Escape
 shoot commits 2
 
 start helix-term/src/ui/file_tree.rs

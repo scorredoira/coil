@@ -55,6 +55,11 @@ pub struct FileTree {
     opened: Option<OpenCommit>,
     /// The line blamed last, so blaming it again opens its commit.
     blamed: Option<Blamed>,
+    /// Whether the history list's diff follows its cursor: from the first move or click in
+    /// it, so arriving at the tab does not take the editor's view away.
+    list_preview: bool,
+    /// The row last clicked and when, so a second click on it soon after is a double click.
+    last_click: Option<(usize, Instant)>,
     /// The scratch buffer the diffs are shown in, reused for as long as it lives.
     diff_doc: Option<DocumentId>,
     /// What the diff buffer was last asked to show, so it is asked again only when that moves.
@@ -98,6 +103,10 @@ const CHANGES_REFRESH: Duration = Duration::from_secs(2);
 /// How many commits one `git log` reads; the cursor nearing the end reads the next page.
 const COMMITS_PAGE: usize = 200;
 
+/// Two clicks on the same row closer than this are a double click: the terminal reports
+/// each press on its own, so the tree tells them apart itself.
+const DOUBLE_CLICK: Duration = Duration::from_millis(500);
+
 /// The narrowest the separator can be dragged to.
 const MIN_WIDTH: u16 = 12;
 
@@ -137,6 +146,8 @@ struct Commit {
     /// The file the commit was reached by (a file's history, a blame), relative to the
     /// repository's top and named as it was in that commit.
     file: Option<String>,
+    /// Where that file came from when the commit renamed it, so its diff reads as a rename.
+    file_from: Option<String>,
 }
 
 /// A line to blame: the buffer's file, its line from 0, and the buffer's text, which is what
@@ -230,6 +241,8 @@ impl FileTree {
             history_of: None,
             opened: None,
             blamed: None,
+            list_preview: false,
+            last_click: None,
             diff_doc: None,
             previewed: None,
             preview_pending: None,
@@ -467,6 +480,7 @@ impl FileTree {
             return;
         }
         self.tab = tab;
+        self.list_preview = false;
         self.rebuild(editor);
         self.revealed = None;
     }
@@ -557,6 +571,7 @@ impl FileTree {
     /// none. What was read of the other is dropped, along with any read still under way.
     fn set_history(&mut self, history: Option<PathBuf>) {
         self.history_of = history;
+        self.list_preview = false;
         self.commits = None;
         self.commits_complete = false;
         self.commits_pending = None;
@@ -627,6 +642,8 @@ impl FileTree {
         };
         self.cursor = index.unwrap_or(opened.list_cursor);
         self.scroll = opened.list_scroll;
+        // Back on the list, the diff goes on following the cursor, now over whole commits.
+        self.list_preview = true;
         self.rebuild(editor);
     }
 
@@ -834,8 +851,34 @@ impl FileTree {
         if self.tab != Tab::Commits {
             return None;
         }
-        let opened = self.opened.as_ref()?;
         let row = self.rows.get(self.cursor)?;
+        if let RowKind::Commit(index) = row.kind {
+            if !self.list_preview {
+                return None;
+            }
+            let Some(Ok(commits)) = &self.commits else {
+                return None;
+            };
+            let commit = commits.get(index)?;
+            // In a file's history the diff is that file's; in the whole one, the commit's.
+            let (pathspecs, name) = match &commit.file {
+                Some(file) => {
+                    let mut pathspecs = vec![format!(":(top,literal){file}")];
+                    if let Some(from) = &commit.file_from {
+                        pathspecs.push(format!(":(top,literal){from}"));
+                    }
+                    let base = file.rsplit('/').next().unwrap_or(file);
+                    (pathspecs, format!("{} {base}", commit.short))
+                }
+                None => (vec![".".to_string()], commit.short.clone()),
+            };
+            return Some(DiffTarget {
+                hash: commit.hash.clone(),
+                pathspecs,
+                name,
+            });
+        }
+        let opened = self.opened.as_ref()?;
         let top = |path: &Path| {
             let inside = path.strip_prefix(&self.root).unwrap_or(path);
             format!(
@@ -1093,6 +1136,7 @@ impl FileTree {
     pub fn handle_key(&mut self, key: KeyEvent, cx: &mut commands::Context) -> EventResult {
         let editor = &mut cx.editor;
         let half_page = (self.page / 2).max(1) as isize;
+        let before = self.cursor;
         match (key.code, key.modifiers) {
             (KeyCode::Esc, _) => {
                 if self.tab == Tab::Commits && self.opened.is_some() {
@@ -1176,6 +1220,10 @@ impl FileTree {
                 self.prompt_delete(cx);
             }
             _ => {}
+        }
+        // Moving through the history is choosing a commit to look at, as a click is.
+        if self.tab == Tab::Commits && self.opened.is_none() && self.cursor != before {
+            self.list_preview = true;
         }
         EventResult::Consumed(None)
     }
@@ -1388,11 +1436,20 @@ impl FileTree {
                     return EventResult::Consumed(None);
                 }
                 self.cursor = index;
-                // Inside a commit a click on a file only moves the diff there, leaving the keys
-                // with the tree to go on reading down the list.
-                let selects_only =
-                    self.tab == Tab::Commits && self.opened.is_some() && !self.rows[index].is_dir();
-                if !selects_only && self.open_row(editor) {
+                let now = Instant::now();
+                let double = self
+                    .last_click
+                    .is_some_and(|(row, at)| row == index && now.duration_since(at) < DOUBLE_CLICK);
+                self.last_click = if double { None } else { Some((index, now)) };
+                // In the Commits tab a click chooses what the diff shows and leaves the keys
+                // with the tree to go on reading down the list; a double click is Enter.
+                let kind = self.rows[index].kind;
+                let chooses = self.tab == Tab::Commits && kind != RowKind::Dir && !double;
+                if chooses {
+                    if matches!(kind, RowKind::Commit(_)) {
+                        self.list_preview = true;
+                    }
+                } else if self.open_row(editor) {
                     self.focused = false;
                 }
                 self.clamp();
@@ -1557,6 +1614,7 @@ impl FileTree {
                     x: area.x + 1,
                     y,
                     width: content_width.saturating_sub(1),
+                    show_hash: row.kind == RowKind::CommitHead,
                     hash_style,
                     subject_style,
                 };
@@ -1710,9 +1768,11 @@ fn query_commits(root: &Path, skip: usize, history: Option<&Path>) -> CommitsAns
         }
         // The followed file's status: its path next, or where it came from and then its path.
         if !record.contains(&0x1f) {
-            if matches!(record[0], b'R' | b'C') {
-                records.next();
-            }
+            let from = if matches!(record[0], b'R' | b'C') {
+                records.next()
+            } else {
+                None
+            };
             let (Some(commit), Some(path)) = (commits.last_mut(), records.next()) else {
                 return Err(format!(
                     "git log: unreadable entry {:?}",
@@ -1720,6 +1780,7 @@ fn query_commits(root: &Path, skip: usize, history: Option<&Path>) -> CommitsAns
                 ));
             };
             commit.file = Some(String::from_utf8_lossy(path).into_owned());
+            commit.file_from = from.map(|from| String::from_utf8_lossy(from).into_owned());
             continue;
         }
         let record = String::from_utf8_lossy(record);
@@ -1738,6 +1799,7 @@ fn query_commits(root: &Path, skip: usize, history: Option<&Path>) -> CommitsAns
             time,
             subject: subject.to_string(),
             file: None,
+            file_from: None,
         });
     }
     Ok(commits)
@@ -1814,6 +1876,7 @@ fn query_blame(root: &Path, request: &BlameRequest) -> Result<Blamed, String> {
             time,
             subject: subject.to_string(),
             file: Some(file.to_string()),
+            file_from: None,
         })
     };
     Ok(Blamed {
@@ -1907,19 +1970,26 @@ struct CommitLine {
     x: u16,
     y: u16,
     width: usize,
+    /// Only the opened commit's own row names its hash; the history reads by subject.
+    show_hash: bool,
     hash_style: Style,
     subject_style: Style,
 }
 
-/// Draws a commit on one line: its short hash, its subject, and its age at the right edge.
+/// Draws a commit on one line: its short hash when asked, its subject, and its age at the
+/// right edge.
 fn draw_commit(surface: &mut Surface, line: &CommitLine, commit: &Commit) {
     let age = format_age(commit.time);
-    let (after_hash, _) =
-        surface.set_stringn(line.x, line.y, &commit.short, line.width, line.hash_style);
-    let used = (after_hash - line.x) as usize + 1;
+    let mut subject_x = line.x;
+    if line.show_hash {
+        let (after_hash, _) =
+            surface.set_stringn(line.x, line.y, &commit.short, line.width, line.hash_style);
+        subject_x = after_hash + 1;
+    }
+    let used = (subject_x - line.x) as usize;
     let subject_width = line.width.saturating_sub(used + age.len() + 1);
     surface.set_string_truncated(
-        after_hash + 1,
+        subject_x,
         line.y,
         &commit.subject,
         subject_width,
