@@ -214,6 +214,10 @@ pub struct Document {
 
     pub readonly: bool,
 
+    /// What a buffer with no file goes by in place of `[scratch]`, for one that shows
+    /// something with a name of its own.
+    pub scratch_name: Option<String>,
+
     pub previous_diagnostic_ids: HashMap<LanguageServerId, String>,
 
     /// Annotations for LSP document color swatches
@@ -764,6 +768,7 @@ impl Document {
             version_control_head: None,
             focused_at: std::time::Instant::now(),
             readonly: false,
+            scratch_name: None,
             jump_labels: HashMap::new(),
             document_highlights: HashMap::new(),
             code_action_hints: HashSet::new(),
@@ -2132,7 +2137,12 @@ impl Document {
 
     pub fn display_name(&self) -> Cow<'_, str> {
         self.relative_path()
-            .map_or_else(|| SCRATCH_BUFFER_NAME.into(), |path| path.to_string_lossy())
+            .map_or_else(|| self.scratch_name().into(), |path| path.to_string_lossy())
+    }
+
+    /// The name of a buffer with no file: the one it was given, or `[scratch]`.
+    pub fn scratch_name(&self) -> &str {
+        self.scratch_name.as_deref().unwrap_or(SCRATCH_BUFFER_NAME)
     }
 
     // transact(Fn) ?
