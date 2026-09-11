@@ -26,7 +26,7 @@ use helix_core::{
 use helix_view::{
     annotations::diagnostics::DiagnosticFilter,
     document::{Mode, SCRATCH_BUFFER_NAME},
-    editor::{CompleteAction, CursorShapeConfig},
+    editor::{CloseError, CompleteAction, CursorShapeConfig},
     graphics::{Color, CursorKind, Modifier, Rect, Style},
     input::{KeyEvent, MouseButton, MouseEvent, MouseEventKind},
     keyboard::{KeyCode, KeyModifiers},
@@ -51,11 +51,21 @@ pub struct EditorView {
 }
 
 struct BufferlineTab {
-    row: u16,
-    start: u16,
-    end: u16,
+    /// The rows and columns the tab covers, padding included.
+    area: Rect,
+    /// The column of its close mark.
+    close: u16,
     doc: helix_view::DocumentId,
 }
+
+/// Where a click on the bufferline landed.
+enum BufferlineHit {
+    Open(helix_view::DocumentId),
+    Close(helix_view::DocumentId),
+}
+
+/// The bufferline's rows: a half-row of padding over the names and one under them.
+const BUFFERLINE_HEIGHT: u16 = 3;
 
 #[derive(Debug, Clone)]
 pub enum InsertEvent {
@@ -694,6 +704,22 @@ impl EditorView {
             .try_get("ui.bufferline")
             .unwrap_or_else(|| editor.theme.get("ui.statusline.inactive"));
 
+        let background = editor
+            .theme
+            .try_get("ui.bufferline.background")
+            .unwrap_or_else(|| editor.theme.get("ui.statusline"))
+            .bg;
+        let editor_background = editor.theme.get("ui.background").bg;
+
+        let top = viewport.y;
+        let middle = top + 1;
+        let bottom = top + 2;
+
+        // The bar ends half-way down its last row, so it sits on the editor.
+        for x in viewport.left()..viewport.right() {
+            draw_half_block(surface, x, bottom, background, editor_background);
+        }
+
         let mut x = viewport.x;
         let current_doc = view!(editor).doc;
 
@@ -711,33 +737,57 @@ impl EditorView {
             } else {
                 bufferline_inactive
             };
+            let tab_background = style.bg.or(background);
 
-            let text = format!(" {}{} ", fname, if doc.is_modified() { "[+]" } else { "" });
-            let used_width = viewport.x.saturating_sub(x);
-            let rem_width = surface.area.width.saturating_sub(used_width);
+            // A modified buffer shows a dot where the cross goes, as it cannot be
+            // closed without losing its changes.
+            let mark = if doc.is_modified() { "●" } else { "×" };
+            let name = format!("  {fname}  ");
+            let width = name.width() as u16 + mark.width() as u16 + 2;
 
-            let start = x;
-            x = surface
-                .set_stringn(x, viewport.y, &text, rem_width as usize, style)
-                .0;
+            // A tab that would not fit whole is not drawn: half a tab hides its
+            // cross, and the cross is what a click aims for.
+            if x + width > viewport.right() {
+                break;
+            }
+
+            let area = Rect::new(x, top, width, BUFFERLINE_HEIGHT);
+            for column in area.left()..area.right() {
+                draw_half_block(surface, column, top, background, tab_background);
+                draw_half_block(surface, column, bottom, tab_background, editor_background);
+            }
+
+            let close = x + name.width() as u16;
+            surface.set_string(x, middle, &name, style);
+            surface.set_string(close, middle, mark, style);
+            surface.set_string(close + mark.width() as u16, middle, "  ", style);
+
             self.bufferline_tabs.push(BufferlineTab {
-                row: viewport.y,
-                start,
-                end: x,
+                area,
+                close,
                 doc: doc.id(),
             });
 
-            if x >= surface.area.right() {
-                break;
-            }
+            // One column of bar between tabs.
+            x += width + 1;
         }
     }
 
-    fn bufferline_tab_at(&self, row: u16, column: u16) -> Option<helix_view::DocumentId> {
-        self.bufferline_tabs
-            .iter()
-            .find(|tab| tab.row == row && column >= tab.start && column < tab.end)
-            .map(|tab| tab.doc)
+    fn bufferline_hit(&self, row: u16, column: u16) -> Option<BufferlineHit> {
+        let tab = self.bufferline_tabs.iter().find(|tab| {
+            let area = tab.area;
+            row >= area.top()
+                && row < area.bottom()
+                && column >= area.left()
+                && column < area.right()
+        })?;
+
+        // The cross takes a column either side too: a single cell is a small target.
+        if column + 1 >= tab.close && column <= tab.close + 1 {
+            return Some(BufferlineHit::Close(tab.doc));
+        }
+
+        Some(BufferlineHit::Open(tab.doc))
     }
 
     pub fn render_gutter<'d>(
@@ -1250,10 +1300,17 @@ impl EditorView {
         }
 
         if kind == MouseEventKind::Down(MouseButton::Left) {
-            if let Some(doc_id) = self.bufferline_tab_at(row, column) {
-                cxt.editor
-                    .switch(doc_id, helix_view::editor::Action::Replace);
-                return EventResult::Consumed(None);
+            match self.bufferline_hit(row, column) {
+                Some(BufferlineHit::Open(doc_id)) => {
+                    cxt.editor
+                        .switch(doc_id, helix_view::editor::Action::Replace);
+                    return EventResult::Consumed(None);
+                }
+                Some(BufferlineHit::Close(doc_id)) => {
+                    close_bufferline_tab(cxt, doc_id);
+                    return EventResult::Consumed(None);
+                }
+                None => {}
             }
         }
 
@@ -1683,7 +1740,7 @@ impl Component for EditorView {
             _ => false,
         };
 
-        // -1 for commandline and -1 for bufferline
+        // -1 for commandline and the bufferline's rows
         let mut editor_area = area.clip_bottom(1);
         if self.file_tree.open {
             let tree_width = config.file_tree.width.min(area.width.saturating_sub(20));
@@ -1692,14 +1749,15 @@ impl Component for EditorView {
             editor_area = editor_area.clip_left(tree_width);
         }
         if use_bufferline {
-            editor_area = editor_area.clip_top(1);
+            editor_area = editor_area.clip_top(BUFFERLINE_HEIGHT);
         }
 
         // if the terminal size suddenly changed, we need to trigger a resize
         cx.editor.resize(editor_area);
 
         if use_bufferline {
-            let bufferline_area = Rect::new(editor_area.x, area.y, editor_area.width, 1);
+            let bufferline_area =
+                Rect::new(editor_area.x, area.y, editor_area.width, BUFFERLINE_HEIGHT);
             self.render_bufferline(cx.editor, bufferline_area, surface);
         } else {
             self.bufferline_tabs.clear();
@@ -1831,5 +1889,68 @@ fn canonicalize_key(key: &mut KeyEvent) {
             }
         }
         modifiers.remove(KeyModifiers::SHIFT)
+    }
+}
+
+/// Paints one cell as two halves, `upper` over `lower`: a terminal colours no less
+/// than a cell, so half a row of padding is a block glyph in two colours. A colour
+/// the theme leaves unset is the terminal's own background.
+fn draw_half_block(
+    surface: &mut Surface,
+    x: u16,
+    y: u16,
+    upper: Option<Color>,
+    lower: Option<Color>,
+) {
+    let Some(cell) = surface.get_mut(x, y) else {
+        return;
+    };
+
+    if upper == lower {
+        cell.set_symbol(" ").set_bg(upper.unwrap_or(Color::Reset));
+        return;
+    }
+
+    match lower {
+        Some(lower) => {
+            cell.set_symbol("▄")
+                .set_fg(lower)
+                .set_bg(upper.unwrap_or(Color::Reset));
+        }
+        // They differ, so the upper half is the one with a colour.
+        None => {
+            cell.set_symbol("▀")
+                .set_fg(upper.unwrap_or(Color::Reset))
+                .set_bg(Color::Reset);
+        }
+    }
+}
+
+/// Closes the buffer whose cross was clicked, as `:buffer-close` would: one with
+/// unsaved changes stays open and says why.
+fn close_bufferline_tab(cx: &mut commands::Context, doc_id: helix_view::DocumentId) {
+    if let Err(err) = cx.block_try_flush_writes() {
+        log::error!("Could not finish pending writes before closing a buffer: {err:#}");
+        cx.editor
+            .set_error(format!("Could not close the buffer: {err:#}"));
+        return;
+    }
+
+    match cx.editor.close_document(doc_id, false) {
+        Ok(()) => {}
+        Err(CloseError::BufferModified(name)) => {
+            cx.editor.set_error(format!(
+                "{name} has unsaved changes: write it, or :buffer-close! to drop them"
+            ));
+        }
+        Err(CloseError::DoesNotExist) => {
+            log::error!("The bufferline offered a buffer that no longer exists: {doc_id:?}");
+            cx.editor.set_error("That buffer no longer exists");
+        }
+        Err(CloseError::SaveError(err)) => {
+            log::error!("Could not close a buffer: {err:#}");
+            cx.editor
+                .set_error(format!("Could not close the buffer: {err:#}"));
+        }
     }
 }
