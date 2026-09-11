@@ -2,13 +2,15 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use helix_core::{Selection, Transaction};
 use helix_view::editor::Action;
 use helix_view::graphics::{Modifier, Rect, Style};
 use helix_view::input::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use helix_view::keyboard::{KeyCode, KeyModifiers};
-use helix_view::Editor;
+use helix_view::view::ViewPosition;
+use helix_view::{DocumentId, Editor};
 use tui::buffer::Buffer as Surface;
 
 use std::borrow::Cow;
@@ -38,14 +40,28 @@ pub struct FileTree {
     changes: Option<ChangesAnswer>,
     pending: Option<Receiver<ChangesAnswer>>,
     queried_at: Option<Instant>,
+    /// The history the Commits tab lists, newest first, as far as it has been read.
+    commits: Option<CommitsAnswer>,
+    /// Whether the last page of history came back short, so there is nothing older to read.
+    commits_complete: bool,
+    commits_pending: Option<Receiver<CommitsPage>>,
+    commits_queried_at: Option<Instant>,
+    /// The commit whose files the Commits tab lists in place of the history.
+    opened: Option<OpenCommit>,
+    /// The scratch buffer the diffs are shown in, reused for as long as it lives.
+    diff_doc: Option<DocumentId>,
+    /// What the diff buffer was last asked to show, so it is asked again only when that moves.
+    previewed: Option<DiffTarget>,
+    preview_pending: Option<Receiver<DiffAnswer>>,
     /// Where each tab's label was drawn on the header line, for a click to land on.
-    tab_columns: [(u16, u16); 2],
+    tab_columns: [(u16, u16); 3],
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Files,
     Changes,
+    Commits,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -58,21 +74,87 @@ enum Change {
 
 type ChangesAnswer = Result<Vec<(PathBuf, Change)>, String>;
 
-/// How often the Changes tab asks git again while it is on screen.
+type CommitsAnswer = Result<Vec<Commit>, String>;
+
+type DiffAnswer = (DiffTarget, Result<String, String>);
+
+/// How often the Changes and Commits tabs ask git again while they are on screen.
 const CHANGES_REFRESH: Duration = Duration::from_secs(2);
+
+/// How many commits one `git log` reads; the cursor nearing the end reads the next page.
+const COMMITS_PAGE: usize = 200;
 
 struct Row {
     path: PathBuf,
     name: String,
-    is_dir: bool,
+    kind: RowKind,
     depth: usize,
     change: Option<Change>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RowKind {
+    File,
+    Dir,
+    /// A commit of the history, by its index in it.
+    Commit(usize),
+    /// The opened commit, standing above its files for the whole of it.
+    CommitHead,
 }
 
 #[derive(Default)]
 struct ChangeDir {
     dirs: BTreeMap<String, ChangeDir>,
     files: BTreeMap<String, Change>,
+}
+
+#[derive(Clone)]
+struct Commit {
+    hash: String,
+    short: String,
+    time: i64,
+    subject: String,
+}
+
+/// One page of history as `git log` answered it, and where in the history it starts.
+struct CommitsPage {
+    skip: usize,
+    answer: CommitsAnswer,
+}
+
+struct OpenCommit {
+    commit: Commit,
+    /// Where the tree's root sits inside the repository, as git spells it: `""` or `"a/b/"`.
+    prefix: String,
+    files: Vec<CommitFile>,
+    /// Its directories start open, like the Changes tab's, so what it remembers is the closed.
+    collapsed: HashSet<PathBuf>,
+    /// Where the history list stood, to put it back on the way out.
+    list_cursor: usize,
+    list_scroll: usize,
+}
+
+struct CommitFile {
+    path: PathBuf,
+    change: Change,
+    /// Where a renamed file came from, relative to the repository's top: without it the diff
+    /// would show the file as new.
+    from: Option<String>,
+}
+
+/// What the diff buffer is asked to show: a commit, narrowed to the pathspecs given.
+#[derive(Clone, PartialEq, Eq)]
+struct DiffTarget {
+    hash: String,
+    pathspecs: Vec<String>,
+    /// What the buffer goes by while it shows this diff: the commit, and the row's name.
+    name: String,
+}
+
+impl Row {
+    fn is_dir(&self) -> bool {
+        self.kind == RowKind::Dir
+    }
 }
 
 impl FileTree {
@@ -93,7 +175,15 @@ impl FileTree {
             changes: None,
             pending: None,
             queried_at: None,
-            tab_columns: [(0, 0); 2],
+            commits: None,
+            commits_complete: false,
+            commits_pending: None,
+            commits_queried_at: None,
+            opened: None,
+            diff_doc: None,
+            previewed: None,
+            preview_pending: None,
+            tab_columns: [(0, 0); 3],
         }
     }
 
@@ -112,11 +202,17 @@ impl FileTree {
     }
 
     fn rebuild(&mut self, editor: &mut Editor) {
-        let selected = self.rows.get(self.cursor).map(|row| row.path.clone());
+        // A commit row has no path to be found by again; its index is what stays put.
+        let selected = self
+            .rows
+            .get(self.cursor)
+            .filter(|row| matches!(row.kind, RowKind::File | RowKind::Dir))
+            .map(|row| row.path.clone());
         let mut rows = Vec::new();
         match self.tab {
             Tab::Files => self.list(&self.root.clone(), 0, editor, &mut rows),
             Tab::Changes => self.list_changes(&mut rows),
+            Tab::Commits => self.list_commits(&mut rows),
         }
         self.rows = rows;
         if let Some(selected) = selected {
@@ -143,10 +239,11 @@ impl FileTree {
                 .to_string_lossy()
                 .into_owned();
             let expanded = is_dir && self.expanded.contains(&path);
+            let kind = if is_dir { RowKind::Dir } else { RowKind::File };
             rows.push(Row {
                 path: path.clone(),
                 name,
-                is_dir,
+                kind,
                 depth,
                 change: None,
             });
@@ -162,8 +259,51 @@ impl FileTree {
         let Some(Ok(changes)) = &self.changes else {
             return;
         };
+        let files = changes
+            .iter()
+            .map(|(path, change)| (path.as_path(), *change));
+        let top = self.change_tree(files);
+        self.list_change_dir(&top, &self.root, 0, rows);
+    }
+
+    /// The rows of the Commits tab: the history, or, inside a commit, the commit itself and
+    /// the files it touched, laid out like the Changes tab's.
+    fn list_commits(&self, rows: &mut Vec<Row>) {
+        if let Some(opened) = &self.opened {
+            rows.push(Row {
+                path: PathBuf::new(),
+                name: opened.commit.subject.clone(),
+                kind: RowKind::CommitHead,
+                depth: 0,
+                change: None,
+            });
+            let files = opened
+                .files
+                .iter()
+                .map(|file| (file.path.as_path(), file.change));
+            let top = self.change_tree(files);
+            self.list_change_dir(&top, &self.root, 0, rows);
+            return;
+        }
+        let Some(Ok(commits)) = &self.commits else {
+            return;
+        };
+        for (index, commit) in commits.iter().enumerate() {
+            rows.push(Row {
+                path: PathBuf::new(),
+                name: commit.subject.clone(),
+                kind: RowKind::Commit(index),
+                depth: 0,
+                change: None,
+            });
+        }
+    }
+
+    /// Groups each changed path under the directories that hold it, below the root; a path
+    /// outside the root is left out.
+    fn change_tree<'a>(&self, files: impl Iterator<Item = (&'a Path, Change)>) -> ChangeDir {
         let mut top = ChangeDir::default();
-        for (path, change) in changes {
+        for (path, change) in files {
             let Ok(relative) = path.strip_prefix(&self.root) else {
                 continue;
             };
@@ -178,9 +318,9 @@ impl FileTree {
             for part in parts {
                 dir = dir.dirs.entry(part).or_default();
             }
-            dir.files.insert(file, *change);
+            dir.files.insert(file, change);
         }
-        self.list_change_dir(&top, &self.root, 0, rows);
+        top
     }
 
     fn list_change_dir(&self, dir: &ChangeDir, path: &Path, depth: usize, rows: &mut Vec<Row>) {
@@ -196,11 +336,11 @@ impl FileTree {
                 child_path = child_path.join(next_name);
                 child = next;
             }
-            let expanded = !self.collapsed.contains(&child_path);
+            let expanded = self.is_expanded(&child_path);
             rows.push(Row {
                 path: child_path.clone(),
                 name,
-                is_dir: true,
+                kind: RowKind::Dir,
                 depth,
                 change: None,
             });
@@ -212,7 +352,7 @@ impl FileTree {
             rows.push(Row {
                 path: path.join(name),
                 name: name.clone(),
-                is_dir: false,
+                kind: RowKind::File,
                 depth,
                 change: Some(*change),
             });
@@ -223,33 +363,97 @@ impl FileTree {
         match self.tab {
             Tab::Files => self.expanded.contains(path),
             Tab::Changes => !self.collapsed.contains(path),
+            Tab::Commits => self
+                .opened
+                .as_ref()
+                .is_some_and(|opened| !opened.collapsed.contains(path)),
         }
     }
 
     fn set_expanded(&mut self, path: PathBuf, expanded: bool) {
-        match (self.tab, expanded) {
-            (Tab::Files, true) => {
-                self.expanded.insert(path);
+        let set = match self.tab {
+            Tab::Files => {
+                if expanded {
+                    self.expanded.insert(path);
+                } else {
+                    self.expanded.remove(&path);
+                }
+                return;
             }
-            (Tab::Files, false) => {
-                self.expanded.remove(&path);
-            }
-            (Tab::Changes, true) => {
-                self.collapsed.remove(&path);
-            }
-            (Tab::Changes, false) => {
-                self.collapsed.insert(path);
-            }
+            Tab::Changes => &mut self.collapsed,
+            Tab::Commits => match &mut self.opened {
+                Some(opened) => &mut opened.collapsed,
+                None => return,
+            },
+        };
+        if expanded {
+            set.remove(&path);
+        } else {
+            set.insert(path);
         }
     }
 
     fn switch_tab(&mut self, tab: Tab, editor: &mut Editor) {
         if self.tab == tab {
+            // Asking for the Commits tab from inside a commit goes back to the history.
+            if tab == Tab::Commits {
+                self.leave_commit(editor);
+            }
             return;
         }
         self.tab = tab;
         self.rebuild(editor);
         self.revealed = None;
+    }
+
+    /// Opens the commit under the cursor: the tab lists its files instead of the history, and
+    /// the diff buffer follows the cursor over them.
+    fn enter_commit(&mut self, editor: &mut Editor) {
+        let Some(RowKind::Commit(index)) = self.rows.get(self.cursor).map(|row| row.kind) else {
+            return;
+        };
+        let Some(Ok(commits)) = &self.commits else {
+            return;
+        };
+        let Some(commit) = commits.get(index).cloned() else {
+            return;
+        };
+        let (prefix, files) = match query_commit_files(&self.root, &commit.hash) {
+            Ok(answer) => answer,
+            Err(err) => {
+                editor.set_error(err);
+                return;
+            }
+        };
+        self.opened = Some(OpenCommit {
+            commit,
+            prefix,
+            files,
+            collapsed: HashSet::new(),
+            list_cursor: self.cursor,
+            list_scroll: self.scroll,
+        });
+        self.cursor = 0;
+        self.scroll = 0;
+        self.rebuild(editor);
+    }
+
+    fn leave_commit(&mut self, editor: &mut Editor) {
+        let Some(opened) = self.opened.take() else {
+            return;
+        };
+        self.previewed = None;
+        self.preview_pending = None;
+        // The history may have been read again meanwhile, so the commit is found by its hash.
+        let index = match &self.commits {
+            Some(Ok(commits)) => commits
+                .iter()
+                .position(|commit| commit.hash == opened.commit.hash),
+            _ => None,
+        };
+        self.cursor = index.unwrap_or(opened.list_cursor);
+        self.scroll = opened.list_scroll;
+        self.rebuild(editor);
     }
 
     /// Takes the answer of a `git status` that finished, and starts the next one when the
@@ -293,6 +497,236 @@ impl FileTree {
         moved
     }
 
+    /// Takes the page of history a `git log` answered, then asks for the next page when the
+    /// cursor nears the end of what is read, or for the top again when the last look is older
+    /// than the refresh interval. Returns whether the history moved.
+    fn poll_commits(&mut self) -> bool {
+        let mut moved = false;
+        if let Some(pending) = &self.commits_pending {
+            match pending.try_recv() {
+                Ok(page) => {
+                    self.commits_pending = None;
+                    moved = self.take_commits(page);
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    self.commits = Some(Err("git log stopped without answering".into()));
+                    self.commits_pending = None;
+                    moved = true;
+                }
+            }
+        }
+        if self.commits_pending.is_some() {
+            return moved;
+        }
+        let next_page = match &self.commits {
+            Some(Ok(commits))
+                if self.opened.is_none()
+                    && !self.commits_complete
+                    && self.cursor + self.page >= commits.len() =>
+            {
+                Some(commits.len())
+            }
+            _ => None,
+        };
+        let stale = self
+            .commits_queried_at
+            .is_none_or(|at| at.elapsed() >= CHANGES_REFRESH);
+        let skip = match next_page {
+            Some(skip) => skip,
+            None if stale => {
+                self.commits_queried_at = Some(Instant::now());
+                0
+            }
+            None => return moved,
+        };
+        let (sender, receiver) = mpsc::channel();
+        let root = self.root.clone();
+        std::thread::spawn(move || {
+            let answer = query_commits(&root, skip);
+            if sender.send(CommitsPage { skip, answer }).is_err() {
+                return;
+            }
+            helix_event::request_redraw();
+            // The redraw that follows is what asks again, for as long as the tab is shown.
+            std::thread::sleep(CHANGES_REFRESH);
+            helix_event::request_redraw();
+        });
+        self.commits_pending = Some(receiver);
+        moved
+    }
+
+    /// Folds a page of history into the list. The top page replaces the list when the history
+    /// moved under it (a commit, a rebase, another branch), keeping the cursor on its commit
+    /// when that one is still there; a later page extends it. Returns whether the list moved.
+    fn take_commits(&mut self, page: CommitsPage) -> bool {
+        let commits = match page.answer {
+            Ok(commits) => commits,
+            Err(err) => {
+                self.commits = Some(Err(err));
+                return true;
+            }
+        };
+        let complete = commits.len() < COMMITS_PAGE;
+        if page.skip > 0 {
+            let Some(Ok(held)) = &mut self.commits else {
+                return false;
+            };
+            // A page of a list that was read again from the top meanwhile.
+            if page.skip != held.len() {
+                return false;
+            }
+            held.extend(commits);
+            self.commits_complete = complete;
+            return true;
+        }
+        let held = match &self.commits {
+            Some(Ok(held)) => Some(held),
+            _ => None,
+        };
+        if let Some(held) = held {
+            if held.first().map(|commit| &commit.hash) == commits.first().map(|commit| &commit.hash)
+            {
+                return false;
+            }
+        }
+        let selected = match self.rows.get(self.cursor).map(|row| row.kind) {
+            Some(RowKind::Commit(index)) => held
+                .and_then(|held| held.get(index))
+                .map(|commit| commit.hash.clone()),
+            _ => None,
+        };
+        if let Some(index) =
+            selected.and_then(|hash| commits.iter().position(|commit| commit.hash == hash))
+        {
+            self.cursor = index;
+        }
+        self.commits = Some(Ok(commits));
+        self.commits_complete = complete;
+        true
+    }
+
+    /// Keeps the diff buffer on what the cursor stands on inside an opened commit: shows the
+    /// `git show` that finished, and asks for another when the cursor has moved.
+    fn poll_preview(&mut self, editor: &mut Editor) {
+        if let Some(pending) = &self.preview_pending {
+            match pending.try_recv() {
+                Ok((target, answer)) => {
+                    self.preview_pending = None;
+                    if self.previewed.as_ref() == Some(&target) {
+                        match answer {
+                            Ok(text) => self.show_diff(editor, target.name, text),
+                            Err(err) => editor.set_error(err),
+                        }
+                    }
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    self.preview_pending = None;
+                    editor.set_error("git show stopped without answering");
+                }
+            }
+        }
+        let Some(target) = self.diff_target() else {
+            return;
+        };
+        if self.previewed.as_ref() == Some(&target) {
+            return;
+        }
+        // A newer request replaces the one in flight, whose answer then has nowhere to land.
+        let (sender, receiver) = mpsc::channel();
+        let root = self.root.clone();
+        let asked = target.clone();
+        std::thread::spawn(move || {
+            let answer = query_diff(&root, &asked);
+            if sender.send((asked, answer)).is_err() {
+                return;
+            }
+            helix_event::request_redraw();
+        });
+        self.previewed = Some(target);
+        self.preview_pending = Some(receiver);
+    }
+
+    /// The diff for the row under the cursor inside an opened commit: the whole commit on its
+    /// own row, a directory's files on the directory, one file on the file.
+    fn diff_target(&self) -> Option<DiffTarget> {
+        if self.tab != Tab::Commits {
+            return None;
+        }
+        let opened = self.opened.as_ref()?;
+        let row = self.rows.get(self.cursor)?;
+        let top = |path: &Path| {
+            let inside = path.strip_prefix(&self.root).unwrap_or(path);
+            format!(
+                ":(top,literal){}{}",
+                opened.prefix,
+                inside.to_string_lossy()
+            )
+        };
+        let mut pathspecs = Vec::new();
+        let mut name = opened.commit.short.clone();
+        match row.kind {
+            RowKind::Commit(_) => return None,
+            RowKind::CommitHead => {
+                if !opened.prefix.is_empty() {
+                    pathspecs.push(format!(":(top,literal){}", opened.prefix));
+                }
+            }
+            RowKind::Dir => {
+                pathspecs.push(top(&row.path));
+                name = format!("{name} {}/", row.name);
+            }
+            RowKind::File => {
+                pathspecs.push(top(&row.path));
+                name = format!("{name} {}", row.name);
+                let file = opened.files.iter().find(|file| file.path == row.path);
+                if let Some(from) = file.and_then(|file| file.from.as_ref()) {
+                    pathspecs.push(format!(":(top,literal){from}"));
+                }
+            }
+        }
+        Some(DiffTarget {
+            hash: opened.commit.hash.clone(),
+            pathspecs,
+            name,
+        })
+    }
+
+    /// Puts `text` in the diff buffer under `name`, shown in the focused view from its first
+    /// line. The buffer is made again when it is gone: helix drops an untouched scratch buffer
+    /// as soon as a view leaves it.
+    fn show_diff(&mut self, editor: &mut Editor, name: String, text: String) {
+        let live = self.diff_doc.filter(|id| editor.documents.contains_key(id));
+        let id = match live {
+            Some(id) => id,
+            None => {
+                let id = editor.new_file(Action::Replace);
+                let loader = editor.syn_loader.load();
+                let result = doc_mut!(editor, &id).set_language_by_language_id("diff", &loader);
+                if let Err(err) = result {
+                    editor.set_error(format!("diff buffer: {err}"));
+                }
+                id
+            }
+        };
+        self.diff_doc = Some(id);
+        if view!(editor).doc != id {
+            editor.switch(id, Action::Replace);
+        }
+        let (view, doc) = current!(editor);
+        let length = doc.text().len_chars();
+        let change = (0, length, Some(text.into()));
+        let transaction = Transaction::change(doc.text(), std::iter::once(change))
+            .with_selection(Selection::point(0));
+        doc.apply(&transaction, view.id);
+        doc.append_changes_to_history(view);
+        doc.reset_modified();
+        doc.set_view_offset(view.id, ViewPosition::default());
+        doc.scratch_name = Some(name);
+        helix_event::request_redraw();
+    }
+
     /// Expands the ancestors of the focused document and moves the cursor onto it.
     fn reveal_current(&mut self, editor: &mut Editor) {
         let doc = doc!(editor);
@@ -300,7 +734,8 @@ impl FileTree {
             return;
         };
         self.revealed = Some(path.clone());
-        if !path.starts_with(&self.root) {
+        // The history is not the disk: the cursor there stays on the commit it was on.
+        if !path.starts_with(&self.root) || self.tab == Tab::Commits {
             return;
         }
         if self.tab == Tab::Changes {
@@ -373,7 +808,7 @@ impl FileTree {
         let Some(row) = self.rows.get(self.cursor) else {
             return;
         };
-        if !row.is_dir {
+        if !row.is_dir() {
             return;
         }
         let path = row.path.clone();
@@ -386,7 +821,7 @@ impl FileTree {
         let Some(row) = self.rows.get(self.cursor) else {
             return;
         };
-        if !row.is_dir || self.is_expanded(&row.path) {
+        if !row.is_dir() || self.is_expanded(&row.path) {
             return;
         }
         self.set_expanded(row.path.clone(), true);
@@ -396,9 +831,16 @@ impl FileTree {
     fn collapse_all(&mut self, editor: &mut Editor) {
         match self.tab {
             Tab::Files => self.expanded.clear(),
-            Tab::Changes => {
-                let dirs = self.rows.iter().filter(|row| row.is_dir);
-                self.collapsed.extend(dirs.map(|row| row.path.clone()));
+            Tab::Changes | Tab::Commits => {
+                let dirs: Vec<PathBuf> = self
+                    .rows
+                    .iter()
+                    .filter(|row| row.is_dir())
+                    .map(|row| row.path.clone())
+                    .collect();
+                for dir in dirs {
+                    self.set_expanded(dir, false);
+                }
             }
         }
         self.rebuild(editor);
@@ -410,7 +852,7 @@ impl FileTree {
         let Some(row) = self.rows.get(self.cursor) else {
             return;
         };
-        if row.is_dir && self.is_expanded(&row.path) {
+        if row.is_dir() && self.is_expanded(&row.path) {
             self.set_expanded(row.path.clone(), false);
             self.rebuild(editor);
             return;
@@ -428,15 +870,32 @@ impl FileTree {
         }
     }
 
-    /// Opens the file under the cursor in the focused view; a directory is toggled instead.
-    /// Returns whether a file was opened.
+    /// Opens the file under the cursor in the focused view; a directory is toggled instead, and
+    /// a commit is entered. Inside a commit the diff already follows the cursor, so opening a
+    /// row is going over to read it. Returns whether the keys should leave the tree.
     fn open_row(&mut self, editor: &mut Editor) -> bool {
         let Some(row) = self.rows.get(self.cursor) else {
             return false;
         };
-        if row.is_dir {
-            self.toggle_dir(editor);
-            return false;
+        match row.kind {
+            RowKind::Dir => {
+                self.toggle_dir(editor);
+                return false;
+            }
+            RowKind::Commit(_) => {
+                self.enter_commit(editor);
+                return false;
+            }
+            // Asked again, in case the diff buffer was left for another one meanwhile.
+            RowKind::CommitHead => {
+                self.previewed = None;
+                return true;
+            }
+            RowKind::File if self.tab == Tab::Commits => {
+                self.previewed = None;
+                return true;
+            }
+            RowKind::File => {}
         }
         let path = row.path.clone();
         if row.change == Some(Change::Deleted) {
@@ -456,7 +915,11 @@ impl FileTree {
         let half_page = (self.page / 2).max(1) as isize;
         match (key.code, key.modifiers) {
             (KeyCode::Esc, _) => {
-                self.focused = false;
+                if self.tab == Tab::Commits && self.opened.is_some() {
+                    self.leave_commit(editor);
+                } else {
+                    self.focused = false;
+                }
             }
             (KeyCode::Char('q'), KeyModifiers::NONE) => {
                 self.open = false;
@@ -494,7 +957,7 @@ impl FileTree {
                 }
             }
             (KeyCode::Char('l'), KeyModifiers::NONE) | (KeyCode::Right, _) => {
-                let is_dir = self.rows.get(self.cursor).is_some_and(|row| row.is_dir);
+                let is_dir = self.rows.get(self.cursor).is_some_and(|row| row.is_dir());
                 if is_dir {
                     self.expand_dir(editor);
                 } else if self.open_row(editor) {
@@ -509,22 +972,25 @@ impl FileTree {
             }
             (KeyCode::Char('R'), KeyModifiers::NONE) => {
                 self.queried_at = None;
+                self.commits_queried_at = None;
                 self.rebuild(editor);
             }
             (KeyCode::Tab, _) => {
                 let tab = match self.tab {
                     Tab::Files => Tab::Changes,
-                    Tab::Changes => Tab::Files,
+                    Tab::Changes => Tab::Commits,
+                    Tab::Commits => Tab::Files,
                 };
                 self.switch_tab(tab, editor);
             }
-            (KeyCode::Char('a'), KeyModifiers::NONE) => {
+            // Creating, renaming and deleting act on the disk, which the history is not.
+            (KeyCode::Char('a'), KeyModifiers::NONE) if self.tab != Tab::Commits => {
                 self.prompt_new(cx);
             }
-            (KeyCode::Char('r'), KeyModifiers::NONE) => {
+            (KeyCode::Char('r'), KeyModifiers::NONE) if self.tab != Tab::Commits => {
                 self.prompt_rename(cx);
             }
-            (KeyCode::Char('d'), KeyModifiers::NONE) => {
+            (KeyCode::Char('d'), KeyModifiers::NONE) if self.tab != Tab::Commits => {
                 self.prompt_delete(cx);
             }
             _ => {}
@@ -560,7 +1026,7 @@ impl FileTree {
         let Some(row) = self.rows.get(self.cursor) else {
             return self.root.clone();
         };
-        if row.is_dir {
+        if row.is_dir() {
             return row.path.clone();
         }
         row.path
@@ -655,7 +1121,7 @@ impl FileTree {
             return;
         };
         let target = row.path.clone();
-        let is_dir = row.is_dir;
+        let is_dir = row.is_dir();
         let question: Cow<'static, str> =
             format!("delete {}? (y/N): ", self.relative(&target)).into();
         let prompt = Prompt::new(
@@ -703,7 +1169,7 @@ impl FileTree {
                 // The first line holds the tabs, not a row.
                 let line = event.row.saturating_sub(self.area.y) as usize;
                 if line == 0 {
-                    let tabs = [Tab::Files, Tab::Changes];
+                    let tabs = [Tab::Files, Tab::Changes, Tab::Commits];
                     let hit = tabs
                         .into_iter()
                         .zip(self.tab_columns)
@@ -718,7 +1184,11 @@ impl FileTree {
                     return EventResult::Consumed(None);
                 }
                 self.cursor = index;
-                if self.open_row(editor) {
+                // Inside a commit a click on a file only moves the diff there, leaving the keys
+                // with the tree to go on reading down the list.
+                let selects_only =
+                    self.tab == Tab::Commits && self.opened.is_some() && !self.rows[index].is_dir();
+                if !selects_only && self.open_row(editor) {
                     self.focused = false;
                 }
                 self.clamp();
@@ -740,13 +1210,21 @@ impl FileTree {
         self.area = area;
         self.page = area.height.saturating_sub(1).max(1) as usize;
 
-        if self.tab == Tab::Changes {
-            let first_answer = self.changes.is_none();
-            if self.poll_changes() {
-                self.rebuild(editor);
-                // The tab opened empty, so the current file could not be marked until now.
-                if first_answer {
-                    self.revealed = None;
+        match self.tab {
+            Tab::Files => {}
+            Tab::Changes => {
+                let first_answer = self.changes.is_none();
+                if self.poll_changes() {
+                    self.rebuild(editor);
+                    // The tab opened empty, so the current file could not be marked until now.
+                    if first_answer {
+                        self.revealed = None;
+                    }
+                }
+            }
+            Tab::Commits => {
+                if self.poll_commits() {
+                    self.rebuild(editor);
                 }
             }
         }
@@ -757,6 +1235,7 @@ impl FileTree {
             self.rebuild(editor);
         }
         self.clamp();
+        self.poll_preview(editor);
 
         let theme = &editor.theme;
         let directory_style = theme.get("ui.text.directory");
@@ -780,6 +1259,7 @@ impl FileTree {
         let labels = [
             (Tab::Files, "Files".to_string()),
             (Tab::Changes, changes_label),
+            (Tab::Commits, "Commits".to_string()),
         ];
         let mut x = area.x + 1;
         for (index, (tab, label)) in labels.iter().enumerate() {
@@ -794,21 +1274,31 @@ impl FileTree {
             x = end + 2;
         }
 
-        if self.tab == Tab::Changes && self.rows.is_empty() {
-            let message = match &self.changes {
-                None => "reading git status…".to_string(),
-                Some(Ok(_)) => "no changes".to_string(),
-                Some(Err(err)) => err.clone(),
-            };
-            let style = match &self.changes {
-                Some(Err(_)) => theme.get("error"),
-                _ => inactive_style,
+        let empty_message = match self.tab {
+            _ if !self.rows.is_empty() => None,
+            Tab::Files => None,
+            Tab::Changes => Some((
+                "reading git status…",
+                "no changes",
+                answer_error(&self.changes),
+            )),
+            Tab::Commits => Some((
+                "reading git log…",
+                "no commits",
+                answer_error(&self.commits),
+            )),
+        };
+        if let Some((reading, nothing, answer)) = empty_message {
+            let (message, style) = match answer {
+                None => (reading, inactive_style),
+                Some(None) => (nothing, inactive_style),
+                Some(Some(err)) => (err, theme.get("error")),
             };
             let width = content_width.saturating_sub(1);
             surface.set_string_truncated(
                 area.x + 1,
                 area.y + 1,
-                &message,
+                message,
                 width,
                 |_| style,
                 true,
@@ -825,8 +1315,44 @@ impl FileTree {
             .take(self.page);
         for (index, row) in rows {
             let y = area.y + 1 + (index - self.scroll) as u16;
+            let selected = index == self.cursor && self.focused;
+            if selected {
+                let line = Rect::new(area.x, y, area.width.saturating_sub(1), 1);
+                surface.set_style(line, selected_style);
+            }
+            let commit = match row.kind {
+                RowKind::Commit(index) => match &self.commits {
+                    Some(Ok(commits)) => commits.get(index),
+                    _ => None,
+                },
+                RowKind::CommitHead => self.opened.as_ref().map(|opened| &opened.commit),
+                RowKind::File | RowKind::Dir => None,
+            };
+            if let Some(commit) = commit {
+                // The selection's background can be the dimmed colour itself, so a selected
+                // row draws its hash and age in the text's colour.
+                let mut hash_style = if selected { text_style } else { inactive_style };
+                let mut subject_style = text_style;
+                if row.kind == RowKind::CommitHead {
+                    hash_style = hash_style.add_modifier(Modifier::BOLD);
+                    subject_style = subject_style.add_modifier(Modifier::BOLD);
+                }
+                if selected {
+                    hash_style = hash_style.patch(selected_style);
+                    subject_style = subject_style.patch(selected_style);
+                }
+                let line = CommitLine {
+                    x: area.x + 1,
+                    y,
+                    width: content_width.saturating_sub(1),
+                    hash_style,
+                    subject_style,
+                };
+                draw_commit(surface, &line, commit);
+                continue;
+            }
             let change_style = row.change.map(|change| change_style(change, theme));
-            let mut style = if row.is_dir {
+            let mut style = if row.is_dir() {
                 directory_style
             } else {
                 change_style.unwrap_or(text_style)
@@ -834,12 +1360,10 @@ impl FileTree {
             if current.as_deref() == Some(row.path.as_path()) {
                 style = style.add_modifier(Modifier::BOLD);
             }
-            if index == self.cursor && self.focused {
-                let line = Rect::new(area.x, y, area.width.saturating_sub(1), 1);
-                surface.set_style(line, selected_style);
+            if selected {
                 style = style.patch(selected_style);
             }
-            let marker = if !row.is_dir {
+            let marker = if !row.is_dir() {
                 "  "
             } else if self.is_expanded(&row.path) {
                 "▾ "
@@ -855,7 +1379,7 @@ impl FileTree {
             surface.set_string_truncated(x, y, &label, width, |_| style, true, false);
             if let Some(change) = row.change {
                 let mut letter_style = change_style.unwrap_or(text_style);
-                if index == self.cursor && self.focused {
+                if selected {
                     letter_style = letter_style.patch(selected_style);
                 }
                 let letter_x = area.right().saturating_sub(3).max(area.x);
@@ -880,6 +1404,16 @@ impl Change {
             Change::Added
         } else {
             Change::Modified
+        }
+    }
+
+    /// What a `--name-status` letter says of a file in a commit.
+    fn from_name_status(status: u8) -> Self {
+        match status {
+            b'A' | b'C' => Change::Added,
+            b'D' => Change::Deleted,
+            b'R' => Change::Renamed,
+            _ => Change::Modified,
         }
     }
 
@@ -935,6 +1469,179 @@ fn query_changes(root: &Path) -> ChangesAnswer {
         changes.push((root.join(inside), change));
     }
     Ok(changes)
+}
+
+/// Reads one page of history, newest first, starting `skip` commits down from HEAD.
+fn query_commits(root: &Path, skip: usize) -> CommitsAnswer {
+    let skip = format!("--skip={skip}");
+    let count = format!("--max-count={COMMITS_PAGE}");
+    let log = run_git(
+        root,
+        // The committer's date, which a rebase renews, so the ages read in the list's order.
+        &[
+            "log",
+            "-z",
+            "--abbrev=7",
+            "--format=%H%x1f%h%x1f%ct%x1f%s",
+            &skip,
+            &count,
+        ],
+    )?;
+
+    let mut commits = Vec::new();
+    for record in log.split(|byte| *byte == 0) {
+        if record.is_empty() {
+            continue;
+        }
+        let record = String::from_utf8_lossy(record);
+        let mut fields = record.splitn(4, '\x1f');
+        let (Some(hash), Some(short), Some(time), Some(subject)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            return Err(format!("git log: unreadable entry {record:?}"));
+        };
+        let Ok(time) = time.parse() else {
+            return Err(format!("git log: unreadable date {time:?}"));
+        };
+        commits.push(Commit {
+            hash: hash.to_string(),
+            short: short.to_string(),
+            time,
+            subject: subject.to_string(),
+        });
+    }
+    Ok(commits)
+}
+
+/// Lists what one commit changed below the root (a merge against its first parent), and
+/// where the root sits inside the repository, which its diffs are then asked with.
+fn query_commit_files(root: &Path, hash: &str) -> Result<(String, Vec<CommitFile>), String> {
+    let prefix = run_git(root, &["rev-parse", "--show-prefix"])?;
+    let prefix = String::from_utf8_lossy(&prefix).trim_end().to_string();
+    let listing = run_git(
+        root,
+        &[
+            "show",
+            "--format=",
+            "--name-status",
+            "-z",
+            "-M",
+            "--diff-merges=first-parent",
+            "--no-color",
+            hash,
+        ],
+    )?;
+
+    let mut files = Vec::new();
+    let mut entries = listing.split(|byte| *byte == 0);
+    while let Some(status) = entries.next() {
+        let Some(letter) = status.first().copied() else {
+            continue;
+        };
+        // A rename or a copy names the path it came from before the one it went to.
+        let from = if matches!(letter, b'R' | b'C') {
+            let Some(from) = entries.next() else {
+                return Err("git show: a rename without its source".into());
+            };
+            Some(String::from_utf8_lossy(from).into_owned())
+        } else {
+            None
+        };
+        let Some(path) = entries.next() else {
+            return Err(format!(
+                "git show: {} names no file",
+                String::from_utf8_lossy(status)
+            ));
+        };
+        let path = String::from_utf8_lossy(path);
+        let Some(inside) = path.strip_prefix(prefix.as_str()) else {
+            continue;
+        };
+        files.push(CommitFile {
+            path: root.join(inside),
+            change: Change::from_name_status(letter),
+            from,
+        });
+    }
+    Ok((prefix, files))
+}
+
+/// The patch of a commit narrowed to the target's pathspecs, under the commit's own header,
+/// as `git show` prints it.
+fn query_diff(root: &Path, target: &DiffTarget) -> Result<String, String> {
+    let mut args = vec![
+        "show",
+        "--format=medium",
+        "--no-color",
+        "--no-ext-diff",
+        "-M",
+        "--diff-merges=first-parent",
+        target.hash.as_str(),
+        "--",
+    ];
+    args.extend(target.pathspecs.iter().map(String::as_str));
+    let patch = run_git(root, &args)?;
+    Ok(String::from_utf8_lossy(&patch).into_owned())
+}
+
+/// Where an answer from git stands: not in yet (`None`), in (`Some(None)`), or git's error.
+fn answer_error<T>(answer: &Option<Result<T, String>>) -> Option<Option<&str>> {
+    answer
+        .as_ref()
+        .map(|answer| answer.as_ref().err().map(String::as_str))
+}
+
+/// Where a commit row is drawn and how its parts look.
+struct CommitLine {
+    x: u16,
+    y: u16,
+    width: usize,
+    hash_style: Style,
+    subject_style: Style,
+}
+
+/// Draws a commit on one line: its short hash, its subject, and its age at the right edge.
+fn draw_commit(surface: &mut Surface, line: &CommitLine, commit: &Commit) {
+    let age = format_age(commit.time);
+    let (after_hash, _) =
+        surface.set_stringn(line.x, line.y, &commit.short, line.width, line.hash_style);
+    let used = (after_hash - line.x) as usize + 1;
+    let subject_width = line.width.saturating_sub(used + age.len() + 1);
+    surface.set_string_truncated(
+        after_hash + 1,
+        line.y,
+        &commit.subject,
+        subject_width,
+        |_| line.subject_style,
+        true,
+        false,
+    );
+    if line.width >= used + age.len() {
+        let age_x = line.x + (line.width - age.len()) as u16;
+        surface.set_string(age_x, line.y, &age, line.hash_style);
+    }
+}
+
+/// How long ago a commit was made, in as few characters as still read: `5m`, `3h`, `2d`.
+fn format_age(time: i64) -> String {
+    const MINUTE: i64 = 60;
+    const HOUR: i64 = 60 * MINUTE;
+    const DAY: i64 = 24 * HOUR;
+    const MONTH: i64 = 30 * DAY;
+    const YEAR: i64 = 365 * DAY;
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(time, |since| since.as_secs() as i64);
+    let seconds = (now - time).max(0);
+    let (amount, unit) = match seconds {
+        s if s < HOUR => (s / MINUTE, "m"),
+        s if s < DAY => (s / HOUR, "h"),
+        s if s < MONTH => (s / DAY, "d"),
+        s if s < YEAR => (s / MONTH, "mo"),
+        s => (s / YEAR, "y"),
+    };
+    format!("{amount}{unit}")
 }
 
 fn run_git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
