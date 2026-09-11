@@ -266,7 +266,10 @@ impl<'a> TextRenderer<'a> {
                     .unwrap_or_else(|| theme.get("ui.virtual.whitespace")),
             ),
             text_style,
-            draw_indent_guides: editor_config.indent_guides.render,
+            // Every line of a diff opens with its marker column, so its leading space is not
+            // indentation and a guide there would only stripe the patch.
+            draw_indent_guides: editor_config.indent_guides.render
+                && doc.language_name() != Some("diff"),
             viewport,
             offset,
         }
