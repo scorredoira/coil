@@ -1,3 +1,4 @@
+pub mod ask;
 mod completion;
 pub mod confirm;
 mod document;

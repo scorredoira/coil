@@ -256,6 +256,17 @@ fn buffer_close(
         return Ok(());
     }
 
+    // Closing the buffer on screen asks about its changes, the way closing them all does.
+    let doc = doc!(cx.editor);
+    if args.is_empty() && doc.is_modified() {
+        ask_about_closing(
+            vec![doc.display_name().to_string()],
+            write_and_close_buffer,
+            |cx| super::run_typable(cx, "buffer-close!"),
+        );
+        return Ok(());
+    }
+
     let document_ids = buffer_gather_paths_impl(cx.editor, args);
     buffer_close_by_ids_impl(cx, &document_ids, false)
 }
@@ -334,8 +345,86 @@ fn buffer_close_all(
         return Ok(());
     }
 
+    // Closing everything at once is one gesture, so what has changes is asked about in the
+    // middle of the screen — never reported in red under the buffers it just took.
+    let modified: Vec<String> = cx
+        .editor
+        .documents()
+        .filter(|doc| doc.is_modified())
+        .map(|doc| doc.display_name().to_string())
+        .collect();
+
+    if !modified.is_empty() {
+        ask_about_closing(
+            modified,
+            |cx| super::name_unsaveable_then(cx, Box::new(write_all_and_close)),
+            |cx| super::run_typable(cx, "buffer-close-all!"),
+        );
+        return Ok(());
+    }
+
     let document_ids = buffer_gather_all_impl(cx.editor);
     buffer_close_by_ids_impl(cx, &document_ids, false)
+}
+
+/// Writes the buffer on screen and closes it. One with no file is named first, and naming
+/// it is what writes it.
+pub(crate) fn write_and_close_buffer(cx: &mut compositor::Context) {
+    if doc!(cx.editor).path().is_none() {
+        super::ask_where_to_save(Box::new(close_buffer));
+        return;
+    }
+
+    let options = WriteOptions {
+        force: false,
+        auto_format: true,
+        code_actions: true,
+    };
+    if let Err(err) = write_impl(cx, None, options) {
+        cx.editor.set_error(format!("Error saving: {err}"));
+        return;
+    }
+
+    close_buffer(cx);
+}
+
+/// Closes the buffer on screen. The flush inside the close waits for a write still on its
+/// way, and a write that failed still refuses to close.
+fn close_buffer(cx: &mut compositor::Context) {
+    let doc_id = doc!(cx.editor).id();
+
+    if let Err(err) = buffer_close_by_ids_impl(cx, &[doc_id], false) {
+        cx.editor.set_error(err.to_string());
+    }
+}
+
+/// The question closing asks when something has changes: what has no file is
+/// asked about first, and throwing the changes away is a deliberate answer, never what
+/// happens while you look elsewhere.
+fn ask_about_closing(
+    modified: Vec<String>,
+    save: fn(&mut compositor::Context),
+    discard: fn(&mut compositor::Context),
+) {
+    let verb = if modified.len() == 1 { "has" } else { "have" };
+
+    job::dispatch_blocking(move |_editor, compositor| {
+        let lines = vec![
+            format!("{} {} changes.", modified.join(", "), verb),
+            "Nothing is closed until you say so.".to_string(),
+        ];
+        let answers = vec![
+            ui::confirm::Answer::new("Save and close", Box::new(save)),
+            ui::confirm::Answer::new("Close without saving", Box::new(discard)).destructive(),
+            ui::confirm::Answer::new("Cancel", Box::new(|_| {})),
+        ];
+
+        compositor.push(Box::new(ui::confirm::Confirm::new(
+            "Unsaved changes",
+            lines,
+            answers,
+        )));
+    });
 }
 
 fn force_buffer_close_all(
@@ -462,6 +551,69 @@ fn write_impl(
     Ok(())
 }
 
+/// Writes the current buffer to `name`, the way `:w <name>` does, making the directories
+/// the name asks for along the way.
+pub(crate) fn write_current_as(cx: &mut compositor::Context, name: &str) -> anyhow::Result<()> {
+    let path = helix_stdx::path::canonicalize(name);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+
+    write_impl(
+        cx,
+        Some(name),
+        WriteOptions {
+            force: false,
+            auto_format: true,
+            code_actions: true,
+        },
+    )
+}
+
+/// Writes every buffer that has a file and closes them all. The flush inside the close is
+/// what waits for the writes and what makes this safe: a buffer whose write failed still
+/// refuses to close.
+pub(crate) fn write_all_and_close(cx: &mut compositor::Context) {
+    if !write_the_named(cx) {
+        return;
+    }
+
+    let document_ids = buffer_gather_all_impl(cx.editor);
+    if let Err(err) = buffer_close_by_ids_impl(cx, &document_ids, false) {
+        cx.editor.set_error(err.to_string());
+    }
+}
+
+/// The same for quitting: `quit-all` flushes the writes and then refuses to go if anything
+/// is still unsaved, so a write that failed cannot take the editor down with it.
+pub(crate) fn write_all_and_quit(cx: &mut compositor::Context) {
+    if !write_the_named(cx) {
+        return;
+    }
+
+    super::run_typable(cx, "quit-all");
+}
+
+/// Writes what has a file. A buffer that was just given a name is already being written
+/// and has no path yet, so `write_scratch` stays off: it would report a write under way as
+/// a buffer nobody named.
+fn write_the_named(cx: &mut compositor::Context) -> bool {
+    let options = WriteAllOptions {
+        force: false,
+        write_scratch: false,
+        auto_format: true,
+        code_actions: true,
+    };
+
+    if let Err(err) = write_all_impl(cx, options) {
+        cx.editor.set_error(err.to_string());
+        return false;
+    }
+
+    true
+}
+
 /// Trim all whitespace preceding line-endings in a document.
 pub(crate) fn trim_trailing_whitespace(doc: &mut Document, view_id: ViewId) {
     let text = doc.text();
@@ -530,6 +682,12 @@ pub struct WriteOptions {
 
 fn write(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    // A buffer with no file is asked where it goes, rather than refused.
+    if args.first().is_none() && doc!(cx.editor).path().is_none() {
+        super::ask_where_to_save(Box::new(|_| {}));
         return Ok(());
     }
 

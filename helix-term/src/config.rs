@@ -240,21 +240,40 @@ mod tests {
 
         assert_eq!(config.editor.soft_wrap.enable, Some(true));
         assert!(!config.editor.file_picker.git_ignore);
-        assert!(config.editor.auto_save.focus_lost);
+        // Nothing is written for you: what is open and changed is asked about instead.
+        assert!(!config.editor.auto_save.focus_lost);
         assert!(!config.editor.auto_save.after_delay.enable);
         assert!(matches!(config.theme, Some(theme::Config::Adaptive { .. })));
+        assert_eq!(config.editor.default_mode, Mode::Insert);
+
+        for mode in [Mode::Normal, Mode::Select, Mode::Insert] {
+            assert_eq!(command_at(&config, mode, &["C-c"]), "copy_to_clipboard");
+            assert_eq!(command_at(&config, mode, &["C-x"]), "cut_to_clipboard");
+            assert_eq!(command_at(&config, mode, &["C-space"]), "completion");
+            assert_eq!(command_at(&config, mode, &["C-v"]), "paste_from_clipboard");
+            assert_eq!(command_at(&config, mode, &["C-z"]), "undo");
+            assert_eq!(command_at(&config, mode, &["C-y"]), "redo");
+            assert_eq!(command_at(&config, mode, &["C-p"]), "file_picker");
+            assert_eq!(command_at(&config, mode, &["C-P"]), "command_palette");
+            assert_eq!(command_at(&config, mode, &["C-F"]), "global_search");
+            assert_eq!(command_at(&config, mode, &["C-b"]), "sidebar_toggle");
+        }
+
+        // Escape stays in insert: it closes what is open, it does not change the mode.
+        assert_eq!(command_at(&config, Mode::Insert, &["esc"]), "escape");
         assert_eq!(
-            command_at(&config, Mode::Normal, &["C-c"]),
-            "yank_to_clipboard"
+            command_at(&config, Mode::Insert, &["C-left"]),
+            "move_prev_word_start"
         );
-        assert_eq!(
-            command_at(&config, Mode::Select, &["C-c"]),
-            "yank_to_clipboard"
-        );
-        assert_eq!(
-            command_at(&config, Mode::Normal, &["F12"]),
-            "goto_definition"
-        );
+        assert_eq!(command_at(&config, Mode::Insert, &["C-u"]), "no_op");
+        // What the language server answers is not normal mode's: the editor lives in
+        // insert now, and a key only bound there would be dead where it is used.
+        for mode in [Mode::Normal, Mode::Select, Mode::Insert] {
+            assert_eq!(command_at(&config, mode, &["F12"]), "goto_definition");
+            assert_eq!(command_at(&config, mode, &["S-F12"]), "goto_reference");
+            assert_eq!(command_at(&config, mode, &["F2"]), "rename_symbol");
+            assert_eq!(command_at(&config, mode, &["F8"]), "goto_next_diag");
+        }
         assert_eq!(
             command_at(&config, Mode::Normal, &["space", "space"]),
             "global_search"
@@ -277,11 +296,20 @@ mod tests {
         }
 
         for mode in [Mode::Normal, Mode::Select, Mode::Insert] {
-            assert_eq!(command_at(&config, mode, &["Cmd-c"]), "yank_to_clipboard");
+            assert_eq!(command_at(&config, mode, &["Cmd-c"]), "copy_to_clipboard");
+            assert_eq!(
+                command_at(&config, mode, &["C-d"]),
+                "select_next_occurrence"
+            );
+            assert_eq!(command_at(&config, mode, &["C-K"]), "delete_line");
+            assert_eq!(command_at(&config, mode, &["C-7"]), "toggle_comments");
+            assert_eq!(command_at(&config, mode, &["C-w"]), "buffer-close");
+            assert_eq!(command_at(&config, mode, &["C-S"]), "save_as");
             assert_eq!(command_at(&config, mode, &["C-s"]), "write");
             assert_eq!(command_at(&config, mode, &["C-q"]), "quit_saving");
             assert_eq!(command_at(&config, mode, &["C-,"]), "settings");
             assert_eq!(command_at(&config, mode, &["Cmd-s"]), "write");
+            assert_eq!(command_at(&config, mode, &["C-n"]), "new");
             assert_eq!(command_at(&config, mode, &["C-g"]), "goto_line_prompt");
             assert_eq!(command_at(&config, mode, &["C-f"]), "search_in_file");
             assert_eq!(command_at(&config, mode, &["A-z"]), "toggle-option");

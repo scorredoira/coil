@@ -141,13 +141,21 @@ shoot settings
 
 # What cannot be saved for you is asked about, in the middle of the screen.
 start README.md
-typed ":new"
-keys Enter
+keys C-n
 keys i
 typed "notes I never gave a file to"
 keys Escape
 keys C-q
 shoot quit
+
+# And the question that takes a name, rather than refusing to write the buffer.
+start README.md
+keys C-n
+keys i
+typed "notes I never gave a file to"
+keys Escape
+keys C-s
+shoot save-as
 
 start --vsplit helix-term/src/ui/sidebar/mod.rs helix-term/src/ui/sidebar/tab.rs
 keys Space T

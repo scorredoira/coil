@@ -313,6 +313,7 @@ impl MappableCommand {
     #[rustfmt::skip]
     static_commands!(
         no_op, "Do nothing",
+        escape, "Close what is open, and leave insert mode when the editor is modal",
         move_char_left, "Move left",
         move_char_right, "Move right",
         move_line_up, "Move up",
@@ -509,6 +510,15 @@ impl MappableCommand {
         later, "Move forward in history",
         commit_undo_checkpoint, "Commit changes to new checkpoint",
         yank, "Yank selection",
+        duplicate_line, "Put a copy of every line the selection touches under it",
+        delete_line, "Delete every line the selection touches",
+        move_lines_up, "Move the lines the selection touches one line up",
+        move_lines_down, "Move the lines the selection touches one line down",
+        select_next_occurrence, "Select the word under the caret, then where it appears next",
+        save_as, "Write the file under a name this asks for",
+        copy_to_clipboard, "Copy the selection, or the whole line when there is none",
+        cut_to_clipboard, "Cut the selection, or the whole line when there is none",
+        paste_from_clipboard, "Paste at the cursor, over the selection when there is one",
         yank_to_clipboard, "Yank selections to clipboard",
         yank_to_primary_clipboard, "Yank selections to primary clipboard",
         yank_joined, "Join and yank selections",
@@ -741,6 +751,18 @@ impl PartialEq for MappableCommand {
 }
 
 fn no_op(_cx: &mut Context) {}
+
+/// Escape does what it does in the editor it is in: where you type, it closes what is open
+/// and drops the selection; in a modal editor it leaves insert mode, or going back to
+/// modal would shut the door behind you.
+fn escape(cx: &mut Context) {
+    if cx.editor.config().default_mode == Mode::Insert {
+        collapse_selection(cx);
+        return;
+    }
+
+    normal_mode(cx);
+}
 
 type MoveFn =
     fn(RopeSlice, Range, Direction, usize, Movement, &TextFormat, &mut TextAnnotations) -> Range;
@@ -4256,6 +4278,76 @@ pub(crate) fn unsaveable(editor: &Editor) -> Vec<String> {
         .collect()
 }
 
+/// What is done once every buffer that needed a name has one. It travels to the dialog
+/// through a job, so it is `Send` like everything else that crosses one.
+pub(crate) type AfterNaming = Box<dyn FnOnce(&mut compositor::Context) + Send>;
+
+/// Asks where the current buffer goes, writes it there and then runs `done`. A buffer with
+/// no file is a question, never a refusal: the editor knows what it wants, it is only
+/// missing the name.
+pub(crate) fn ask_where_to_save(done: AfterNaming) {
+    let directory = helix_stdx::env::current_working_dir();
+    let label = format!("In {}", directory.display());
+
+    job::dispatch_blocking(move |_editor, compositor| {
+        let ask = ui::ask::Ask::new(
+            "Save as",
+            &label,
+            "Save",
+            Box::new(move |cx: &mut compositor::Context, name: String| {
+                if let Err(err) = typed::write_current_as(cx, &name) {
+                    cx.editor.set_error(format!("Error saving: {err}"));
+                    return;
+                }
+
+                done(cx);
+            }),
+        );
+
+        compositor.push(Box::new(ask));
+    });
+}
+
+/// Asks about each buffer that has changes and no file, one dialog after the next, and
+/// runs `done` when none is left. The editor moves to each one as it is asked about, so
+/// the name is given to the file on screen; cancelling any of them stops everything, and
+/// `done` never runs.
+pub(crate) fn name_unsaveable_then(cx: &mut compositor::Context, done: AfterNaming) {
+    // The buffers are taken now and walked in order, never looked up again as "the next
+    // one with no file": a write is asynchronous, so one just named still has no path
+    // when the dialog for the next one opens, and it would be asked about twice.
+    let mut unnamed: Vec<DocumentId> = cx
+        .editor
+        .documents()
+        .filter(|doc| doc.is_modified() && doc.path().is_none())
+        .map(|doc| doc.id())
+        .collect();
+
+    unnamed.reverse();
+    name_each_then(cx, unnamed, done);
+}
+
+/// Asks about the last of `left`, then the one before it, until there is none.
+fn name_each_then(cx: &mut compositor::Context, mut left: Vec<DocumentId>, done: AfterNaming) {
+    let Some(doc_id) = left.pop() else {
+        done(cx);
+        return;
+    };
+
+    // A buffer can be closed, or given a name of its own, while the dialogs are open.
+    let gone = match cx.editor.documents.get(&doc_id) {
+        Some(doc) => doc.path().is_some(),
+        None => true,
+    };
+    if gone {
+        name_each_then(cx, left, done);
+        return;
+    }
+
+    cx.editor.switch(doc_id, Action::Replace);
+    ask_where_to_save(Box::new(move |cx| name_each_then(cx, left, done)));
+}
+
 /// The settings a newcomer reaches for, on screen instead of in a file nobody knows is
 /// there. What is changed here is written to config.toml as it is changed.
 fn settings(_cx: &mut Context) {
@@ -4280,14 +4372,21 @@ fn quit_saving(cx: &mut Context) {
 
     // The dialog is built where it is pushed: what an answer carries cannot travel.
     job::dispatch_blocking(move |_editor, compositor| {
+        let verb = if unnamed.len() == 1 { "has" } else { "have" };
         let lines = vec![
             format!(
-                "{} has changes and no file to write them to.",
+                "{} {verb} changes and no file to write them to.",
                 unnamed.join(", ")
             ),
             "Everything else is saved.".to_string(),
         ];
         let answers = vec![
+            ui::confirm::Answer::new(
+                "Save and quit",
+                Box::new(|cx: &mut compositor::Context| {
+                    name_unsaveable_then(cx, Box::new(typed::write_all_and_quit))
+                }),
+            ),
             ui::confirm::Answer::new(
                 "Quit without saving",
                 Box::new(|cx: &mut compositor::Context| run_typable(cx, "quit-all!")),
@@ -5044,7 +5143,7 @@ fn normal_mode(cx: &mut Context) {
 }
 
 // Store a jump on the jumplist.
-fn push_jump(view: &mut View, doc: &mut Document) {
+pub(crate) fn push_jump(view: &mut View, doc: &mut Document) {
     doc.append_changes_to_history(view);
     let jump = (doc.id(), doc.selection(view.id).clone());
     view.push_jump(doc, jump);
@@ -5277,7 +5376,11 @@ fn goto_next_diag(cx: &mut Context) {
 
         let selection = match diag {
             Some(diag) => Selection::single(diag.range.start, diag.range.end),
-            None => return,
+            // Going nowhere in silence reads as a key that did not arrive.
+            None => {
+                editor.set_status("No problem after this one");
+                return;
+            }
         };
         push_jump(view, doc);
         doc.set_selection(view.id, selection);
@@ -5974,6 +6077,278 @@ fn yank(cx: &mut Context) {
 
 fn yank_to_clipboard(cx: &mut Context) {
     yank_impl(cx.editor, '+');
+    exit_select_mode(cx);
+}
+
+/// Whether there is no selection to act on, only a caret. While typing that is what the
+/// fork already tracks for Backspace; outside it, a range wider than nothing.
+fn nothing_selected(editor: &Editor) -> bool {
+    let (view, doc) = current_ref!(editor);
+    let empty = doc
+        .selection(view.id)
+        .iter()
+        .all(|range| range.anchor == range.head);
+
+    if editor.mode == Mode::Insert {
+        return !editor.insert_selection || empty;
+    }
+
+    empty
+}
+
+/// The whole lines each range touches, line endings included. Two carets on one line come
+/// back as one block: building a selection merges them.
+fn line_blocks(editor: &Editor) -> Selection {
+    let (view, doc) = current_ref!(editor);
+    let text = doc.text().slice(..);
+
+    doc.selection(view.id).clone().transform(|range| {
+        let first = text.char_to_line(range.from());
+        let mut last = text.char_to_line(range.to());
+
+        // A selection ending exactly where a line starts has not reached that line.
+        if last > first && text.line_to_char(last) == range.to() {
+            last -= 1;
+        }
+
+        let from = text.line_to_char(first);
+        let to = text.line_to_char((last + 1).min(text.len_lines()));
+
+        Range::new(from, to)
+    })
+}
+
+/// What a copy takes: the selection, or the whole line when there is none.
+fn copied_values(editor: &Editor) -> Vec<String> {
+    let ranges = if nothing_selected(editor) {
+        line_blocks(editor)
+    } else {
+        let (view, doc) = current_ref!(editor);
+        doc.selection(view.id).clone()
+    };
+
+    let (_, doc) = current_ref!(editor);
+    let text = doc.text().slice(..);
+
+    ranges.fragments(text).map(Cow::into_owned).collect()
+}
+
+/// Copy, the way it works everywhere else: the selection, or the whole line when there is
+/// none. The caret does not move — copying a line is not a way to select it.
+fn copy_to_clipboard(cx: &mut Context) {
+    copy_impl(cx);
+}
+
+/// The copy above, saying whether the text landed anywhere.
+fn copy_impl(cx: &mut Context) -> bool {
+    let values = copied_values(cx.editor);
+
+    if let Err(err) = cx.editor.registers.write('+', values) {
+        cx.editor.set_error(err.to_string());
+        return false;
+    }
+
+    true
+}
+
+/// Cut: the same, and then the text goes — but only once the copy is somewhere, or it
+/// would be a delete wearing another name.
+fn cut_to_clipboard(cx: &mut Context) {
+    if !copy_impl(cx) {
+        return;
+    }
+
+    if nothing_selected(cx.editor) {
+        let lines = line_blocks(cx.editor);
+        let (view, doc) = current!(cx.editor);
+        doc.set_selection(view.id, lines);
+    }
+
+    delete_selection(cx);
+}
+
+/// A copy of every line the selection touches, right under it.
+fn duplicate_line(cx: &mut Context) {
+    let blocks = line_blocks(cx.editor);
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let ending = doc.line_ending.as_str();
+
+    let changes: Vec<(usize, usize, Option<Tendril>)> = blocks
+        .iter()
+        .map(|block| {
+            let mut copy = text.slice(block.from()..block.to()).to_string();
+
+            // The last line of a file has no line ending, so the copy brings one itself.
+            if !copy.ends_with(ending) {
+                copy.insert_str(0, ending);
+            }
+
+            (block.to(), block.to(), Some(copy.into()))
+        })
+        .collect();
+
+    let transaction = Transaction::change(doc.text(), changes.into_iter());
+    doc.apply(&transaction, view.id);
+}
+
+/// Every line the selection touches, gone.
+fn delete_line(cx: &mut Context) {
+    let blocks = line_blocks(cx.editor);
+    let (view, doc) = current!(cx.editor);
+    doc.set_selection(view.id, blocks);
+
+    delete_selection(cx);
+}
+
+fn move_lines_up(cx: &mut Context) {
+    move_lines(cx, Direction::Backward);
+}
+
+fn move_lines_down(cx: &mut Context) {
+    move_lines(cx, Direction::Forward);
+}
+
+/// Swaps the lines the selection touches with the line over or under them, and takes the
+/// selection along. It moves the whole span at once: carets on lines far apart walking
+/// past each other is not something anybody asks for, and it is not one transaction.
+fn move_lines(cx: &mut Context, direction: Direction) {
+    let blocks = line_blocks(cx.editor);
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let ending = doc.line_ending.as_str();
+
+    let Some(from) = blocks.iter().map(|block| block.from()).min() else {
+        return;
+    };
+    let Some(to) = blocks.iter().map(|block| block.to()).max() else {
+        return;
+    };
+
+    let first = text.char_to_line(from);
+    let last = text.char_to_line(to.saturating_sub(1));
+
+    // Where the line being swapped with runs, and nothing to do when there is none.
+    let (start, end) = match direction {
+        Direction::Backward if first > 0 => (text.line_to_char(first - 1), to),
+        Direction::Forward if last + 1 < text.len_lines() => {
+            (from, text.line_to_char((last + 2).min(text.len_lines())))
+        }
+        _ => return,
+    };
+
+    let block = text.slice(from..to).to_string();
+    let other = match direction {
+        Direction::Backward => text.slice(start..from).to_string(),
+        Direction::Forward => text.slice(to..end).to_string(),
+    };
+
+    // The file's last line has no ending: whichever half lands last keeps that, so the
+    // one that used to be last gives its ending to the one taking its place.
+    let moved_by = other.chars().count();
+    let (mut left, mut right) = match direction {
+        Direction::Backward => (block, other),
+        Direction::Forward => (other, block),
+    };
+    if !right.ends_with(ending) && left.ends_with(ending) {
+        left.truncate(left.len() - ending.len());
+        right.push_str(ending);
+    }
+
+    let moved = format!("{left}{right}");
+    let transaction = Transaction::change(
+        doc.text(),
+        std::iter::once((start, end, Some(moved.into()))),
+    );
+    doc.apply(&transaction, view.id);
+
+    // The selection goes with the text it was on.
+    let shift = match direction {
+        Direction::Backward => -(moved_by as isize),
+        Direction::Forward => moved_by as isize,
+    };
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        Range::new(
+            range.anchor.saturating_add_signed(shift),
+            range.head.saturating_add_signed(shift),
+        )
+    });
+    doc.set_selection(view.id, selection);
+}
+
+/// The word under the caret; pressed again, where that word appears next, as one more
+/// caret. `Ctrl-D` as every other editor does it.
+fn select_next_occurrence(cx: &mut Context) {
+    let (view, doc) = current_ref!(cx.editor);
+    let text = doc.text().slice(..);
+    let selection = doc.selection(view.id).clone();
+    let primary = selection.primary();
+
+    // Nothing taken yet: take the word the caret is in, and let the next key replace it.
+    if nothing_selected(cx.editor) {
+        let word =
+            textobject::textobject_word(text, primary, textobject::TextObject::Inside, 1, false);
+        let index = selection.primary_index();
+        let taken = selection.replace(index, word);
+
+        let (view, doc) = current!(cx.editor);
+        doc.set_selection(view.id, taken);
+        mark_insert_selection(cx.editor);
+
+        return;
+    }
+
+    let needle = text.slice(primary.from()..primary.to()).to_string();
+    let Ok(regex) = rope::RegexBuilder::new()
+        .syntax(rope::Config::new().multi_line(true))
+        .build(&regex::escape(&needle))
+    else {
+        return;
+    };
+
+    // From the end of the one in hand, and round the end of the file if there is none.
+    let after = text.char_to_byte(primary.to());
+    let found = regex
+        .find(text.regex_input_at_bytes(after..))
+        .or_else(|| regex.find(text.regex_input_at_bytes(..after)));
+
+    let Some(found) = found else {
+        return;
+    };
+
+    let next = Range::new(
+        text.byte_to_char(found.start()),
+        text.byte_to_char(found.end()),
+    );
+    if selection.ranges().contains(&next) {
+        cx.editor.set_status("Every one of them is taken");
+        return;
+    }
+
+    let taken = selection.push(next);
+    let (view, doc) = current!(cx.editor);
+    doc.set_selection(view.id, taken);
+    mark_insert_selection(cx.editor);
+}
+
+/// Write the file under a name, which for one that has none is the only way to write it.
+fn save_as(_cx: &mut Context) {
+    ask_where_to_save(Box::new(|_| {}));
+}
+
+/// Paste at the caret, and over the selection when there is one, which is what every
+/// other editor does with something selected. The register is the system clipboard, which
+/// keeps what was copied here for the terminals that let a program write the clipboard but
+/// never read it back.
+fn paste_from_clipboard(cx: &mut Context) {
+    let count = cx.count();
+
+    if nothing_selected(cx.editor) {
+        paste(cx.editor, '+', Paste::Before, count);
+        return;
+    }
+
+    replace_selections_with_register(cx.editor, '+', count);
     exit_select_mode(cx);
 }
 

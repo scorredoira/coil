@@ -59,7 +59,7 @@ const DEFAULT_TAB_WIDTH: usize = 4;
 
 pub const DEFAULT_LANGUAGE_NAME: &str = "text";
 
-pub const SCRATCH_BUFFER_NAME: &str = "[scratch]";
+pub const SCRATCH_BUFFER_NAME: &str = "Untitled";
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Mode {
@@ -214,7 +214,7 @@ pub struct Document {
 
     pub readonly: bool,
 
-    /// What a buffer with no file goes by in place of `[scratch]`, for one that shows
+    /// What a buffer with no file goes by in place of `Untitled`, for one that shows
     /// something with a name of its own.
     pub scratch_name: Option<String>,
 
@@ -2140,7 +2140,7 @@ impl Document {
             .map_or_else(|| self.scratch_name().into(), |path| path.to_string_lossy())
     }
 
-    /// The name of a buffer with no file: the one it was given, or `[scratch]`.
+    /// The name of a buffer with no file: the one it was given, or `Untitled`.
     pub fn scratch_name(&self) -> &str {
         self.scratch_name.as_deref().unwrap_or(SCRATCH_BUFFER_NAME)
     }

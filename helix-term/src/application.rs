@@ -79,6 +79,9 @@ pub struct Application {
     lsp_progress: LspProgressMap,
 
     theme_mode: Option<theme::Mode>,
+
+    /// What was last written down as open, so it is written again only when it changes.
+    session: crate::session::Session,
 }
 
 #[cfg(feature = "integration")]
@@ -230,7 +233,17 @@ impl Application {
                 editor.new_file(Action::VerticalSplit);
             }
         } else if stdin().is_terminal() || cfg!(feature = "integration") {
-            editor.new_file(Action::VerticalSplit);
+            // With no file named, the editor is opened on the project, so it opens what the
+            // project had open. A session that cannot be read costs the tabs, not the start.
+            let restored = if config.load().editor.restore_session {
+                Self::restore_session(&mut editor)
+            } else {
+                false
+            };
+
+            if !restored {
+                editor.new_file(Action::VerticalSplit);
+            }
         } else {
             editor
                 .new_file_from_stdin(Action::VerticalSplit)
@@ -258,6 +271,7 @@ impl Application {
             jobs,
             lsp_progress: LspProgressMap::new(),
             theme_mode,
+            session: crate::session::Session::default(),
         };
 
         Ok(app)
@@ -317,6 +331,10 @@ impl Application {
             if self.editor.should_close() {
                 return false;
             }
+
+            // What is open is written down as it changes, not on the way out: by then the
+            // documents are closed and there is nothing left to ask.
+            self.remember_session();
 
             use futures_util::StreamExt;
 
@@ -705,6 +723,11 @@ impl Application {
     pub async fn handle_terminal_events(&mut self, event: std::io::Result<TerminalEvent>) {
         #[cfg(not(windows))]
         use termina::escape::csi;
+
+        // Every event as the terminal handed it over: what a key actually sends through a
+        // chain of terminal, multiplexer and ssh is answered by reading this, never by
+        // guessing. `coil -vv` writes it to the log.
+        log::debug!("terminal event: {event:?}");
 
         let mut cx = crate::compositor::Context {
             editor: &mut self.editor,
@@ -1377,6 +1400,75 @@ impl Application {
         self.editor.close_language_servers(None).await;
 
         errs
+    }
+
+    /// Opens what the project had open, and says whether anything was there to open.
+    fn restore_session(editor: &mut Editor) -> bool {
+        let workspace = helix_loader::find_workspace().0;
+        let session = match crate::session::load(&workspace) {
+            Ok(session) => session,
+            Err(err) => {
+                log::error!("Could not read what this project had open: {err:#}");
+                return false;
+            }
+        };
+
+        let Some(session) = session else {
+            return false;
+        };
+
+        let mut opened = 0;
+        for file in &session.files {
+            // The first one makes the view every other one loads into.
+            let action = match opened {
+                0 => helix_view::editor::Action::VerticalSplit,
+                _ => helix_view::editor::Action::Load,
+            };
+
+            match editor.open(file, action) {
+                Ok(_) => opened += 1,
+                // A file that moved or went is one tab fewer, not a failure to open on.
+                Err(err) => log::info!("Not opening {}: {err}", file.display()),
+            }
+        }
+
+        if opened == 0 {
+            return false;
+        }
+
+        if let Some(focused) = &session.focused {
+            if let Some(doc_id) = editor.document_id_by_path(focused) {
+                editor.switch(doc_id, helix_view::editor::Action::Replace);
+            }
+        }
+
+        true
+    }
+
+    /// Writes down what is open, for the next time the editor opens on this project. It
+    /// does nothing while nothing has changed, which is almost always.
+    fn remember_session(&mut self) {
+        if !self.config.load().editor.restore_session {
+            return;
+        }
+
+        let files: Vec<_> = self
+            .editor
+            .documents()
+            .filter_map(|doc| doc.path().map(Path::to_path_buf))
+            .collect();
+        let focused = doc!(self.editor).path().map(Path::to_path_buf);
+
+        if files == self.session.files && focused == self.session.focused {
+            return;
+        }
+
+        self.session = crate::session::Session { files, focused };
+
+        let workspace = helix_loader::find_workspace().0;
+        if let Err(err) = crate::session::save(&workspace, &self.session) {
+            log::error!("Could not remember what this project had open: {err:#}");
+        }
     }
 }
 

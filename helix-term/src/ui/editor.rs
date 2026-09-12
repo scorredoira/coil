@@ -28,7 +28,7 @@ use helix_view::{
     annotations::diagnostics::DiagnosticFilter,
     document::Mode,
     editor::{CloseError, CompleteAction, CursorShapeConfig},
-    graphics::{Color, CursorKind, Modifier, Rect, Style},
+    graphics::{Color, CursorKind, Modifier, Rect, Style, UnderlineStyle},
     input::{KeyEvent, MouseButton, MouseEvent, MouseEventKind},
     keyboard::{KeyCode, KeyModifiers},
     tree::Separator,
@@ -76,6 +76,9 @@ enum BufferlineHit {
 
 /// The bufferline's rows: a half-row of padding over the names and one under them.
 const BUFFERLINE_HEIGHT: u16 = 3;
+
+/// How many lines a click has to land away from the cursor to count as a jump.
+const JUMP_LINES: usize = 10;
 
 #[derive(Debug, Clone)]
 pub enum InsertEvent {
@@ -706,10 +709,14 @@ impl EditorView {
                 .unwrap_or_else(|| editor.theme.get("ui.statusline")),
         );
 
+        // The tab in front is told apart by its shape and its colour. The underline the
+        // status line wears comes along when a theme has no tab colours of its own, and
+        // under a title it reads as a stray rule.
         let bufferline_active = editor
             .theme
             .try_get("ui.bufferline.active")
-            .unwrap_or_else(|| editor.theme.get("ui.statusline.active"));
+            .unwrap_or_else(|| editor.theme.get("ui.statusline.active"))
+            .underline_style(UnderlineStyle::Reset);
 
         let bufferline_inactive = editor
             .theme
@@ -1097,8 +1104,12 @@ impl EditorView {
             match keyresult {
                 KeymapResult::NotFound => {
                     if !self.on_next_key(OnKeyCallbackKind::Fallback, cx, event) {
-                        if let Some(ch) = event.typed_char() {
-                            commands::insert::insert_char(cx, ch)
+                        match event.typed_char() {
+                            Some(ch) => commands::insert::insert_char(cx, ch),
+                            // A shortcut nothing is bound to says so. In a terminal,
+                            // silence is also what a key that never arrived looks like,
+                            // and telling those two apart is most of the work.
+                            None => cx.editor.set_status(format!("{event} is not bound")),
                         }
                     }
                 }
@@ -1407,6 +1418,19 @@ impl EditorView {
 
                 if let Some((pos, view_id)) = pos_and_view(editor, row, column, true) {
                     editor.focus(view_id);
+
+                    // A click that lands far from the cursor is a jump: leaving by clicking
+                    // is still leaving, and coming back is what the back key is for.
+                    let (view, doc) = current!(editor);
+                    let far = {
+                        let text = doc.text().slice(..);
+                        let cursor = doc.selection(view.id).primary().cursor(text);
+
+                        text.char_to_line(cursor).abs_diff(text.char_to_line(pos)) >= JUMP_LINES
+                    };
+                    if far {
+                        commands::push_jump(view, doc);
+                    }
 
                     let prev_view_id = view!(editor).id;
                     let doc = doc_mut!(editor, &view!(editor, view_id).doc);

@@ -3,6 +3,7 @@ use crate::{
     clipboard::ClipboardProvider,
     document::{
         DocumentOpenError, DocumentSavedEventFuture, DocumentSavedEventResult, Mode, SavePoint,
+        SCRATCH_BUFFER_NAME,
     },
     events::{DocumentDidClose, DocumentDidOpen, DocumentFocusLost},
     graphics::{CursorKind, Rect},
@@ -312,6 +313,11 @@ where
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub struct Config {
+    /// The mode the editor opens in, and the one it settles back into when it moves to
+    /// another buffer or view. Defaults to normal.
+    pub default_mode: Mode,
+    /// Whether opening the editor on a project opens the files it had open. Defaults to false.
+    pub restore_session: bool,
     /// Padding to keep between the edge of the screen and the cursor when scrolling. Defaults to 5.
     pub scrolloff: usize,
     /// Number of lines to scroll at once. Defaults to 3
@@ -1195,6 +1201,8 @@ impl Default for WordCompletion {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            default_mode: Mode::Normal,
+            restore_session: false,
             scrolloff: 5,
             scroll_lines: 3,
             mouse: true,
@@ -1450,7 +1458,7 @@ impl Editor {
         area.height -= 1;
 
         Self {
-            mode: Mode::Normal,
+            mode: conf.default_mode,
             insert_selection: false,
             tree: Tree::new(area),
             next_document_id: DocumentId::default(),
@@ -1968,7 +1976,7 @@ impl Editor {
         }
 
         if !matches!(action, Action::Load) {
-            self.enter_normal_mode();
+            self.settle_mode();
         }
 
         let focust_lost = match action {
@@ -2095,10 +2103,34 @@ impl Editor {
     }
 
     pub fn new_file(&mut self, action: Action) -> DocumentId {
-        self.new_file_from_document(
-            action,
-            Document::default(self.config.clone(), self.syn_loader.clone()),
-        )
+        let mut doc = Document::default(self.config.clone(), self.syn_loader.clone());
+        doc.scratch_name = Some(self.next_scratch_name());
+
+        self.new_file_from_document(action, doc)
+    }
+
+    /// `Untitled`, then `Untitled 2`, `Untitled 3`…: the lowest one no buffer is already
+    /// going by, so two tabs are never called the same thing.
+    fn next_scratch_name(&self) -> String {
+        let taken: Vec<&str> = self
+            .documents()
+            .filter(|doc| doc.path().is_none())
+            .map(|doc| doc.scratch_name())
+            .collect();
+
+        let mut number = 1;
+        loop {
+            let name = match number {
+                1 => SCRATCH_BUFFER_NAME.to_string(),
+                number => format!("{SCRATCH_BUFFER_NAME} {number}"),
+            };
+
+            if !taken.contains(&name.as_str()) {
+                return name;
+            }
+
+            number += 1;
+        }
     }
 
     pub fn new_file_from_stdin(&mut self, action: Action) -> Result<DocumentId, Error> {
@@ -2308,8 +2340,8 @@ impl Editor {
             return;
         }
 
-        // Reset mode to normal and ensure any pending changes are committed in the old document.
-        self.enter_normal_mode();
+        // Settle the mode and ensure any pending changes are committed in the old document.
+        self.settle_mode();
         let (view, doc) = current!(self);
         doc.append_changes_to_history(view);
         self.ensure_cursor_in_view(view_id);
@@ -2557,6 +2589,17 @@ impl Editor {
     }
 
     /// Switches the editor into normal mode.
+    /// The mode the editor settles into when it moves to another buffer or view. An editor
+    /// that opens in insert stays there: dropping somebody into a mode they did not ask for,
+    /// where the letters are commands and not text, is the trap this avoids.
+    fn settle_mode(&mut self) {
+        if self.config().default_mode == Mode::Insert {
+            return;
+        }
+
+        self.enter_normal_mode();
+    }
+
     pub fn enter_normal_mode(&mut self) {
         use helix_core::graphemes;
 

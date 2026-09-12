@@ -96,40 +96,71 @@ reaches the file behind it.
 
 ## Tabs, splits and the mouse
 
-Buffers are tabs you can click, each with a cross that closes it. Splits
-resize by dragging the line between two side by side, or the status line
-between two stacked. In the pickers a click previews a row and a double click
-opens it.
+Buffers are tabs you can click, each with a cross that closes it. Opening the
+editor on a project with no file named reopens the files it had open, the one
+you were on in front; naming a file opens that file alone, and the settings
+screen turns it off altogether. Splits resize by dragging the line between two
+side by side, or the status line between two stacked. In the pickers a click
+previews a row and a double click opens it.
 
 ![Two files side by side, each a tab you can click](fork/screenshots/splits.png)
 
 ## Ready as installed
 
-Coil needs no configuration file. On top of Helix's keys it brings the ones
-you already know:
+**Coil opens where you type.** It starts in insert mode and stays there: moving
+to another file or another split no longer drops you into normal mode, and
+`Escape` closes what is open rather than changing the mode you are in. Helix's
+modal editing is all still here — the first line of the settings screen
+(`Ctrl-,`) switches back to it, and so does `default-mode = "normal"` under
+`[editor]` — but nothing takes you to it without asking.
+
+So the keys are the ones you already know:
 
 | Key | Does |
 |---|---|
+| `Ctrl-z` / `Ctrl-y` | Undo / redo |
+| `Ctrl-x` / `Ctrl-c` / `Ctrl-v` | Cut / copy / paste — the whole line when nothing is selected |
 | `Ctrl-a` | Select everything |
 | `Shift` + an arrow | Select while typing (`Ctrl-Shift` for whole words) |
-| `Backspace` | Delete the selection, or the character before the cursor |
-| `Delete` | Delete the selection, or the character under the cursor |
-| `Ctrl-c` | Copy the selection to the system clipboard |
-| `Ctrl-s` | Save |
-| `Ctrl-f` | Search and replace in this file |
+| `Ctrl` + `←` / `→` | Move by words |
+| `Ctrl-Home` / `Ctrl-End` | To the start and the end of the file |
+| `Backspace` / `Delete` | Delete the selection, or one character |
+| `Ctrl-Backspace` / `Ctrl-Delete` | Delete a whole word |
+| `Ctrl-d` | Select the word, then where it appears next — one more caret each time |
+| `Ctrl-Shift-d` / `Ctrl-Shift-k` | Duplicate / delete the line |
+| `Ctrl` + `↑` / `↓` | Move the line up or down |
+| `Ctrl-Shift` + `↑` / `↓` | Grow the selection to the enclosing code, and back |
+| `Ctrl-/` | Comment, or uncomment |
+| `Tab` / `Shift-Tab` | Indent, or unindent |
+| `Ctrl-n` / `Ctrl-w` | A new buffer / close this one |
+| `Ctrl-s` / `Ctrl-Shift-s` | Save / save under a name |
+| `Ctrl-p` | Open a file by name |
+| `Ctrl-Shift-p` | The command palette |
+| `Ctrl-f` / `F3` / `Shift-F3` | Search in this file / next match / previous |
+| `Ctrl-Shift-f` | Search and replace across the project |
 | `Ctrl-g` | Go to a line |
-| `Alt-z` | Wrap long lines, or stop |
-| `Ctrl-Shift-b` | Show or hide the Markdown preview beside the file |
-| `Ctrl-Shift-m` | The Markdown preview on its own, filling the screen |
+| `Ctrl-Shift-o` / `Ctrl-t` | Go to a symbol in the file / in the project |
+| `Ctrl-b` / `Ctrl-Shift-e` | The sidebar: show or hide / focus |
+| `Ctrl-PageUp` / `Ctrl-PageDown` | The tab before / after this one |
+| `Ctrl-\` | Split the editor |
 | `F12` / `Shift-F12` | Go to the definition / to the references |
 | `F2` | Rename the symbol |
 | `F8` | Next diagnostic |
+| `Alt-z` | Wrap long lines, or stop |
+| `Ctrl-Shift-b` | Show or hide the Markdown preview beside the file |
+| `Ctrl-Shift-m` | The Markdown preview on its own, filling the screen |
 | `Ctrl-q` | Save everything and quit |
 | `Ctrl-,` | Settings |
-| `Space Space` | Search and replace across the project (`Space /` too) |
 
-On a Mac `Cmd-c` copies and `Cmd-s` saves as well, and a `Cmd` or `Ctrl` key
-nothing is bound to never types its letter.
+A `Cmd` or `Ctrl` key nothing is bound to never types its letter, and on a Mac
+`Cmd-z`, `Cmd-x`, `Cmd-c`, `Cmd-b` and `Cmd-Shift-f` do what their `Ctrl` twins
+do — in the terminals that forward `Cmd` at all, since many keep it for their
+own menus.
+
+Where a keyboard puts `/`, `\` or `]` behind another key — a Spanish layout does
+— the editor sees the key that was actually pressed, so `Ctrl-/` is bound to the
+`7` key and `Ctrl-\` to `º`. Everything is in `defaults.toml`, laid under your
+own `config.toml`.
 
 While typing, a selection behaves as it does in any other editor: `Shift` with
 an arrow, `Home` or `End` grows it from the cursor, the mouse drags one, typing
@@ -137,15 +168,23 @@ replaces it and `Backspace` or `Delete` removes it. None of that leaves insert
 mode, and none of it touches how selections work outside it, where they are what
 the commands act on.
 
-Your work is saved for you: leave a file — another tab, another window, or the
-terminal itself losing focus — and it is written to disk. Closing a tab writes
-it too, and `Ctrl-q` writes everything before it quits. Saving while you type
-(`auto-save.after-delay`) stays off.
+Nothing is written for you: `Ctrl-s` saves, and what has changes is asked about
+before it can be lost — closing a tab, closing them all, quitting. The settings
+screen turns on writing a file when you leave it, or while you type, if you
+would rather it were.
 
-The only thing that cannot be written for you is a buffer with no file behind
-it, and that one asks, in the middle of the screen: arrows or `Tab` walk the
-answers, `Enter` takes the one in focus, a click takes the one it lands on, and
-`Escape` always answers no.
+The one thing that cannot be written for you is a buffer with no file behind it
+— `Ctrl-n` opens one — and that is asked about rather than refused: saving it
+puts a field in the middle of the screen for the name, and a name with
+directories in it makes them on the way. Quitting and closing everything ask the
+same way, one buffer after the next, and throwing the changes away is always an
+answer somebody chose.
+
+![Where a buffer with no file goes, asked before it is written](fork/screenshots/save-as.png)
+
+Every question is answered the same: arrows or `Tab` walk the answers, `Enter`
+takes the one in focus, a click takes the one it lands on, and `Escape` always
+answers no.
 
 ![The question asked before quitting with something unsaved](fork/screenshots/quit.png)
 

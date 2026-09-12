@@ -1189,20 +1189,17 @@ pub fn rename_symbol(cx: &mut Context) {
         }
     }
 
-    fn create_rename_prompt(
-        editor: &Editor,
+    /// The new name is asked for in the middle of the screen, not on the status line: it
+    /// is a decision that changes every use of the symbol, not a line of text to type.
+    fn create_rename_dialog(
         prefill: String,
-        history_register: Option<char>,
         language_server_id: Option<LanguageServerId>,
-    ) -> Box<ui::Prompt> {
-        let prompt = ui::Prompt::new(
-            "rename-to:".into(),
-            history_register,
-            ui::completers::none,
-            move |cx: &mut compositor::Context, input: &str, event: PromptEvent| {
-                if event != PromptEvent::Validate {
-                    return;
-                }
+    ) -> Box<ui::ask::Ask> {
+        let ask = ui::ask::Ask::new(
+            "Rename symbol",
+            "The new name, everywhere it is used",
+            "Rename",
+            Box::new(move |cx: &mut compositor::Context, name: String| {
                 let (view, doc) = current!(cx.editor);
 
                 let Some(language_server) = doc
@@ -1217,7 +1214,7 @@ pub fn rename_symbol(cx: &mut Context) {
                 let offset_encoding = language_server.offset_encoding();
                 let pos = doc.position(view.id, offset_encoding);
                 let future = language_server
-                    .rename_symbol(doc.identifier(), pos, input.to_string())
+                    .rename_symbol(doc.identifier(), pos, name)
                     .unwrap();
 
                 match block_on(future) {
@@ -1228,15 +1225,14 @@ pub fn rename_symbol(cx: &mut Context) {
                     }
                     Err(err) => cx.editor.set_error(err.to_string()),
                 }
-            },
+            }),
         )
-        .with_line(prefill, editor);
+        .with_line(&prefill);
 
-        Box::new(prompt)
+        Box::new(ask)
     }
 
     let (view, doc) = current_ref!(cx.editor);
-    let history_register = cx.register;
 
     if doc
         .language_servers_with_feature(LanguageServerFeature::RenameSymbol)
@@ -1279,15 +1275,12 @@ pub fn rename_symbol(cx: &mut Context) {
                     }
                 };
 
-                let prompt = create_rename_prompt(editor, prefill, history_register, Some(ls_id));
-
-                compositor.push(prompt);
+                compositor.push(create_rename_dialog(prefill, Some(ls_id)));
             },
         );
     } else {
         let prefill = get_prefill_from_word_boundary(cx.editor);
-        let prompt = create_rename_prompt(cx.editor, prefill, history_register, None);
-        cx.push_layer(prompt);
+        cx.push_layer(create_rename_dialog(prefill, None));
     }
 }
 

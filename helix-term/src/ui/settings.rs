@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 use helix_view::{
+    document::Mode,
     editor::ConfigEvent,
     graphics::{Margin, Rect},
     input::{KeyCode, KeyEvent, MouseButton, MouseEventKind},
@@ -35,6 +36,16 @@ struct Setting {
 /// The settings the screen offers. Everything else stays in `config.toml`, where the
 /// whole of Helix's configuration lives.
 const SETTINGS: &[Setting] = &[
+    Setting {
+        label: "The mode it opens in",
+        key: "default-mode",
+        kind: Kind::Words(&["insert", "normal"]),
+    },
+    Setting {
+        label: "Reopen the files a project had open",
+        key: "restore-session",
+        kind: Kind::Switch,
+    },
     Setting {
         label: "Wrap long lines",
         key: "soft-wrap.enable",
@@ -146,6 +157,15 @@ impl Settings {
             log::error!("Could not change '{}': {err:#}", setting.key);
             cx.editor.set_error(format!("Could not change it: {err:#}"));
             return;
+        }
+
+        // The mode it opens in is the one to be in now as well: changing it and waiting
+        // for the next file to be opened would read as the setting not working.
+        if setting.key == "default-mode" {
+            match &next {
+                Value::String(mode) if mode == "insert" => cx.editor.mode = Mode::Insert,
+                _ => cx.editor.enter_normal_mode(),
+            }
         }
 
         if let Err(err) = write_setting(&helix_loader::config_file(), setting.key, &next) {
