@@ -77,12 +77,12 @@ border: the matches listed by line, the file beside them, the same switches.
 
 ## Markdown, as it reads
 
-`Alt-m` draws the Markdown file you are editing beside it: headings, lists and
-tasks, quotes and GitHub's alerts, tables lined up, code highlighted, all
-reflowed to the panel. It redraws as you type and keeps to the part of the file
-on screen; the wheel over it scrolls it on its own until the file moves, and
-dragging the line between the file and the panel resizes it: the width is
-remembered.
+`Ctrl-Shift-b` draws the Markdown file you are editing beside it: headings,
+lists and tasks, quotes and GitHub's alerts, tables lined up, code
+highlighted, all reflowed to the panel. It redraws as you type and keeps to
+the part of the file on screen; the wheel over it scrolls it on its own until
+the file moves, and dragging the line between the file and the panel resizes
+it: the width is remembered.
 
 ![A README and its preview side by side](fork/screenshots/preview.png)
 
@@ -119,7 +119,7 @@ you already know:
 | `Ctrl-f` | Search and replace in this file |
 | `Ctrl-g` | Go to a line |
 | `Alt-z` | Wrap long lines, or stop |
-| `Alt-m` | Show or hide the Markdown preview beside the file |
+| `Ctrl-Shift-b` | Show or hide the Markdown preview beside the file |
 | `Ctrl-Shift-m` | The Markdown preview on its own, filling the screen |
 | `F12` / `Shift-F12` | Go to the definition / to the references |
 | `F2` | Rename the symbol |

@@ -286,7 +286,7 @@ mod tests {
             assert_eq!(command_at(&config, mode, &["C-f"]), "search_in_file");
             assert_eq!(command_at(&config, mode, &["A-z"]), "toggle-option");
             assert_eq!(
-                command_at(&config, mode, &["A-m"]),
+                command_at(&config, mode, &["C-B"]),
                 "markdown_preview_toggle"
             );
             assert_eq!(command_at(&config, mode, &["C-M"]), "markdown_preview_full");
