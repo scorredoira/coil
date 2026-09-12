@@ -19,6 +19,9 @@ pub struct CommitsTab {
     root: PathBuf,
     rows: Vec<Row>,
     list: List,
+    history_rows: Vec<Row>,
+    history_list: List,
+    files_focused: bool,
     showing: Showing,
     /// Counts the times `showing` changed, so a page asked for the previous history is
     /// dropped when it lands.
@@ -72,6 +75,9 @@ impl CommitsTab {
             root,
             rows: Vec::new(),
             list: List::default(),
+            history_rows: Vec::new(),
+            history_list: List::default(),
+            files_focused: false,
             showing: Showing::Repository,
             epoch: 0,
             log: None,
@@ -82,6 +88,26 @@ impl CommitsTab {
             opening: None,
             follow: false,
         }
+    }
+
+    pub fn has_columns(&self) -> bool {
+        self.opened.is_some()
+    }
+
+    pub fn focus_files(&mut self, files: bool) {
+        self.files_focused = files && self.has_columns();
+    }
+
+    pub fn columns(&self) -> [(&[Row], &List, bool); 2] {
+        [
+            (&self.history_rows, &self.history_list, !self.files_focused),
+            (&self.rows, &self.list, self.files_focused),
+        ]
+    }
+
+    pub fn set_page(&mut self, page: usize) {
+        self.history_list.set_page(page);
+        self.list.set_page(page);
     }
 
     /// Lists the history of one file in place of the whole one.
@@ -116,8 +142,10 @@ impl CommitsTab {
         self.complete = false;
         self.asking = None;
         self.opened = None;
+        self.opening = None;
+        self.files_focused = false;
         self.follow = false;
-        self.list.home();
+        self.history_list.home();
     }
 
     /// Asks git for the page of history starting `skip` commits down; one at a time.
@@ -211,12 +239,12 @@ impl CommitsTab {
             return false;
         }
         let under_cursor = held
-            .and_then(|held| held.get(self.list.cursor))
+            .and_then(|held| held.get(self.history_list.cursor))
             .map(|commit| commit.hash.clone());
         let found =
             under_cursor.and_then(|hash| commits.iter().position(|commit| commit.hash == hash));
         if let Some(index) = found {
-            self.list.select(index);
+            self.history_list.select(index);
         }
         self.log = Some(Ok(commits));
         self.complete = complete;
@@ -227,7 +255,7 @@ impl CommitsTab {
         let Some(Ok(commits)) = &self.log else {
             return;
         };
-        if self.opened.is_none() && !self.complete && self.list.near_end() {
+        if !self.complete && self.history_list.near_end() {
             self.ask_page(commits.len());
         }
     }
@@ -256,7 +284,7 @@ impl CommitsTab {
             .map(|inside| self.root.join(inside));
         let (list_cursor, list_scroll) = match &self.opened {
             Some(opened) => (opened.list_cursor, opened.list_scroll),
-            None => (self.list.cursor, self.list.scroll),
+            None => (self.history_list.cursor, self.history_list.scroll),
         };
         self.opened = Some(OpenCommit {
             commit,
@@ -266,6 +294,7 @@ impl CommitsTab {
             list_cursor,
             list_scroll,
         });
+        self.files_focused = true;
         self.list.home();
         self.rebuild(cx.editor);
         if let Some(target) = target {
@@ -279,6 +308,8 @@ impl CommitsTab {
         let Some(opened) = self.opened.take() else {
             return;
         };
+        self.files_focused = false;
+        self.opening = None;
         self.rebuild(cx.editor);
         // The history may have been read again meanwhile, so the commit is found by its hash.
         let index = match &self.log {
@@ -287,8 +318,9 @@ impl CommitsTab {
                 .position(|commit| commit.hash == opened.commit.hash),
             _ => None,
         };
-        self.list.scroll = opened.list_scroll;
-        self.list.select(index.unwrap_or(opened.list_cursor));
+        self.history_list.scroll = opened.list_scroll;
+        self.history_list
+            .select(index.unwrap_or(opened.list_cursor));
         // Back on the list, the diff goes on following the cursor, now over whole commits.
         self.follow = true;
         self.preview(cx);
@@ -305,8 +337,9 @@ impl CommitsTab {
     /// file's in a file's history); inside a commit, the whole commit on its own row, a
     /// directory's files on a directory, one file on a file.
     fn diff_target(&self) -> Option<DiffTarget> {
-        let row = self.rows.get(self.list.cursor)?;
-        let Some(opened) = &self.opened else {
+        let row = self.rows().get(self.list().cursor)?;
+        let opened = self.opened.as_ref().filter(|_| self.files_focused);
+        let Some(opened) = opened else {
             let Row::Commit(row) = row else {
                 return None;
             };
@@ -379,15 +412,27 @@ impl TabView for CommitsTab {
     }
 
     fn rows(&self) -> &[Row] {
-        &self.rows
+        if self.files_focused {
+            &self.rows
+        } else {
+            &self.history_rows
+        }
     }
 
     fn list(&self) -> &List {
-        &self.list
+        if self.files_focused {
+            &self.list
+        } else {
+            &self.history_list
+        }
     }
 
     fn list_mut(&mut self) -> &mut List {
-        &mut self.list
+        if self.files_focused {
+            &mut self.list
+        } else {
+            &mut self.history_list
+        }
     }
 
     fn folds(&self) -> Option<&Folds> {
@@ -423,9 +468,11 @@ impl TabView for CommitsTab {
                 head: true,
             }));
             entries::list_changed(&self.root, &opened.files, &opened.folds, &mut rows);
-        } else if let Some(Ok(commits)) = &self.log {
+        }
+        let mut history_rows = Vec::new();
+        if let Some(Ok(commits)) = &self.log {
             for (index, commit) in commits.iter().enumerate() {
-                rows.push(Row::Commit(CommitRow {
+                history_rows.push(Row::Commit(CommitRow {
                     index,
                     short: commit.short.clone(),
                     subject: commit.subject.clone(),
@@ -434,6 +481,8 @@ impl TabView for CommitsTab {
                 }));
             }
         }
+        self.history_rows = history_rows;
+        self.history_list.set_len(self.history_rows.len());
         self.rows = rows;
         entries::reselect(&self.rows, &mut self.list, selected.as_deref());
     }
@@ -452,7 +501,7 @@ impl TabView for CommitsTab {
 
     fn cursor_moved(&mut self, cx: &mut TabContext) {
         // Moving through the history is choosing a commit to look at, as a click is.
-        if self.opened.is_none() {
+        if !self.files_focused {
             self.follow = true;
             self.ask_next_page_if_near_end();
         }
@@ -474,19 +523,12 @@ impl TabView for CommitsTab {
     }
 
     fn open(&mut self, cx: &mut TabContext, how: Activation) -> Outcome {
-        let Some(row) = self.rows.get(self.list.cursor) else {
+        let Some(row) = self.rows().get(self.list().cursor) else {
             return Outcome::Stay;
         };
-        let in_history = self.opened.is_none();
+        let in_history = !self.files_focused;
         match (row, how) {
-            // A click on a commit chooses what the diff shows and leaves the keys with the
-            // tree to go on reading down the list; Enter opens it into its files.
-            (Row::Commit(_), Activation::Click) if in_history => {
-                self.follow = true;
-                self.preview(cx);
-                Outcome::Stay
-            }
-            (Row::Commit(row), Activation::Enter) if in_history => {
+            (Row::Commit(row), _) if in_history => {
                 let commit = match &self.log {
                     Some(Ok(commits)) => commits.get(row.index).cloned(),
                     _ => None,
@@ -578,4 +620,60 @@ pub fn format_age(time: i64) -> String {
         s => (s / YEAR, "y"),
     };
     format!("{amount}{unit}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn columns_keep_independent_positions_and_diff_targets() {
+        let mut tab = CommitsTab::new(PathBuf::from("/repo"));
+        let commit = Commit {
+            hash: "abc123".into(),
+            short: "abc123".into(),
+            time: 0,
+            subject: "A commit".into(),
+            file: None,
+            file_from: None,
+        };
+        let row = || {
+            Row::Commit(CommitRow {
+                index: 0,
+                short: commit.short.clone(),
+                subject: commit.subject.clone(),
+                time: 0,
+                head: false,
+            })
+        };
+        tab.history_rows = vec![row(), row()];
+        tab.rows = vec![row()];
+        tab.history_list.set_len(2);
+        tab.list.set_len(1);
+        tab.history_list.select(1);
+        tab.log = Some(Ok(vec![commit.clone()]));
+        tab.opened = Some(OpenCommit {
+            commit,
+            prefix: String::new(),
+            files: vec![],
+            folds: Folds::opened(),
+            list_cursor: 1,
+            list_scroll: 0,
+        });
+        tab.focus_files(true);
+        assert_eq!(tab.rows().len(), 1);
+        assert_eq!(tab.list().cursor, 0);
+        assert_eq!(tab.diff_target().unwrap().hash, "abc123");
+        tab.focus_files(false);
+        assert_eq!(tab.rows().len(), 2);
+        assert_eq!(tab.list().cursor, 1);
+        assert!(tab.has_columns());
+        assert_eq!(tab.columns()[1].0.len(), 1);
+        assert!(tab.diff_target().is_none());
+        tab.follow = true;
+        assert_eq!(tab.diff_target().unwrap().hash, "abc123");
+        tab.set_showing(Showing::Repository);
+        assert!(!tab.has_columns());
+        assert!(!tab.files_focused);
+    }
 }

@@ -154,7 +154,12 @@ impl Sidebar {
 
     /// The sidebar's width: the one the separator was dragged to, else the configured one.
     pub fn width(&self, configured: u16) -> u16 {
-        self.width.unwrap_or(configured)
+        let width = self.width.unwrap_or(configured);
+        if self.tab == TabKind::Commits && self.commits.has_columns() {
+            width.saturating_mul(2)
+        } else {
+            width
+        }
     }
 
     pub fn resizing(&self) -> bool {
@@ -384,6 +389,17 @@ impl Sidebar {
 
     pub fn handle_key(&mut self, key: KeyEvent, cx: &mut commands::Context) -> EventResult {
         let editor = &mut cx.editor;
+        if self.tab == TabKind::Commits && self.commits.has_columns() {
+            if key.code == KeyCode::Left && key.modifiers.is_empty() {
+                self.commits.focus_files(false);
+                return EventResult::Consumed(None);
+            }
+            if key.code == KeyCode::Right && key.modifiers.is_empty() && self.commits.columns()[0].2
+            {
+                self.commits.focus_files(true);
+                return EventResult::Consumed(None);
+            }
+        }
         let before = self.active().list().cursor;
         let half_page = self.active().list().half_page();
         let page = self.active().list().page as isize;
@@ -489,6 +505,14 @@ impl Sidebar {
     pub fn handle_mouse(&mut self, event: &MouseEvent, cx: &mut commands::Context) -> EventResult {
         let editor = &mut cx.editor;
         let separator = self.area.right().saturating_sub(1);
+        if self.tab == TabKind::Commits && self.commits.has_columns() && event.row > self.area.y {
+            let files = event.column >= self.area.x + self.area.width / 2;
+            let changed = self.commits.columns()[0].2 == files;
+            self.commits.focus_files(files);
+            if changed {
+                self.last_click = None;
+            }
+        }
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) if event.column == separator => {
                 self.resizing = true;
@@ -498,7 +522,14 @@ impl Sidebar {
                 let total = self.area.width + editor.tree.area().width;
                 let most = total.saturating_sub(EDITOR_ROOM).max(MIN_WIDTH);
                 let wanted = event.column.saturating_sub(self.area.x) + 1;
-                self.width = Some(wanted.clamp(MIN_WIDTH, most));
+                let wanted = wanted.clamp(MIN_WIDTH, most);
+                self.width = Some(
+                    if self.tab == TabKind::Commits && self.commits.has_columns() {
+                        wanted / 2
+                    } else {
+                        wanted
+                    },
+                );
             }
             MouseEventKind::Up(MouseButton::Left) if self.resizing => {
                 self.resizing = false;
@@ -622,6 +653,9 @@ impl Sidebar {
         self.area = area;
         let page = area.height.saturating_sub(1) as usize;
         self.active_mut().list_mut().set_page(page);
+        if self.tab == TabKind::Commits {
+            self.commits.set_page(page);
+        }
         if !self.built {
             self.came_on_screen(editor);
         }
@@ -664,7 +698,7 @@ impl Sidebar {
         }
 
         let tab = self.active();
-        if tab.rows().is_empty() {
+        if tab.rows().is_empty() && !(self.tab == TabKind::Commits && self.commits.has_columns()) {
             if let Some(message) = tab.empty_message() {
                 let style = if message.is_error {
                     theme.get("error")
@@ -686,34 +720,61 @@ impl Sidebar {
             return;
         }
 
-        let list = tab.list();
-        let rows = tab
-            .rows()
-            .iter()
-            .enumerate()
-            .skip(list.scroll)
-            .take(list.page);
-        for (index, row) in rows {
-            let y = area.y + 1 + (index - list.scroll) as u16;
-            let line = Rect::new(area.x, y, area.width.saturating_sub(1), 1);
-            let selected = (index == list.cursor && self.focused).then_some(selected_style);
-            if let Some(selected) = selected {
-                surface.set_style(line, selected);
+        let split = self.tab == TabKind::Commits && self.commits.has_columns();
+        let columns = if split {
+            let middle = area.x + area.width / 2;
+            for y in area.y + 1..area.bottom() {
+                surface.set_string(middle - 1, y, "│", separator_style);
             }
-            let current = current
-                .as_deref()
-                .is_some_and(|current| row.path() == Some(current));
-            let paint = RowPaint {
-                line,
-                selected,
-                current,
-            };
-            match row {
-                Row::Entry(entry) => {
-                    let open = tab.folds().is_some_and(|folds| folds.is_open(&entry.path));
-                    entries::draw_entry(surface, &paint, entry, open, theme);
+            let [(history, history_list, history_focus), (files, files_list, files_focus)] =
+                self.commits.columns();
+            vec![
+                (
+                    history,
+                    history_list,
+                    history_focus,
+                    Rect::new(area.x, area.y, area.width / 2, area.height),
+                ),
+                (
+                    files,
+                    files_list,
+                    files_focus,
+                    Rect::new(middle, area.y, area.width - area.width / 2, area.height),
+                ),
+            ]
+        } else {
+            vec![(tab.rows(), tab.list(), true, area)]
+        };
+        for (rows, list, focused, area) in columns {
+            let rows = rows.iter().enumerate().skip(list.scroll).take(list.page);
+            for (index, row) in rows {
+                let y = area.y + 1 + (index - list.scroll) as u16;
+                let line = Rect::new(area.x, y, area.width.saturating_sub(1), 1);
+                let selected = (index == list.cursor && (self.focused || split)).then_some(
+                    if self.focused && focused {
+                        selected_style
+                    } else {
+                        theme.get("ui.text.inactive").add_modifier(Modifier::BOLD)
+                    },
+                );
+                if let Some(selected) = selected {
+                    surface.set_style(line, selected);
                 }
-                Row::Commit(commit) => commits::draw_commit(surface, &paint, commit, theme),
+                let current = current
+                    .as_deref()
+                    .is_some_and(|current| row.path() == Some(current));
+                let paint = RowPaint {
+                    line,
+                    selected,
+                    current,
+                };
+                match row {
+                    Row::Entry(entry) => {
+                        let open = tab.folds().is_some_and(|folds| folds.is_open(&entry.path));
+                        entries::draw_entry(surface, &paint, entry, open, theme);
+                    }
+                    Row::Commit(commit) => commits::draw_commit(surface, &paint, commit, theme),
+                }
             }
         }
     }

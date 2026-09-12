@@ -1,7 +1,6 @@
 //! The Files tab: the workspace as it is on disk, following the file being edited, with
 //! the prompts that create, rename and delete.
 
-use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use helix_view::editor::Action;
@@ -14,7 +13,8 @@ use crate::commands;
 use crate::compositor;
 use crate::job;
 use crate::ui;
-use crate::ui::{EditorView, Prompt, PromptEvent};
+use crate::ui::confirm::{Answer, Confirm};
+use crate::ui::EditorView;
 
 pub struct FilesTab {
     root: PathBuf,
@@ -223,33 +223,36 @@ pub fn prompt_delete(cx: &mut commands::Context, target: PromptTarget) {
         return;
     };
     let is_dir = target.is_dir;
-    let question: Cow<'static, str> = format!("delete {}? (y/N): ", target.relative(&path)).into();
-    let prompt = Prompt::new(
-        question,
-        None,
-        |_editor, _input| Vec::new(),
-        move |cx, input, event| {
-            if event != PromptEvent::Validate || !input.trim().eq_ignore_ascii_case("y") {
-                return;
-            }
-            let removed = if is_dir {
-                std::fs::remove_dir_all(&path)
-            } else {
-                std::fs::remove_file(&path)
-            };
-            if let Err(err) = removed {
-                cx.editor.set_error(format!("{}: {}", path.display(), err));
-                return;
-            }
-            close_documents_under(cx.editor, &path);
-            let parent = path
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| path.clone());
-            disk_changed(cx, parent);
-        },
-    );
-    cx.push_layer(Box::new(prompt));
+    let kind = if is_dir { "folder" } else { "file" };
+    let mut lines = vec![format!("Delete {kind} \"{}\"?", target.relative(&path))];
+    if is_dir {
+        lines.push("All its contents will also be deleted.".to_string());
+    }
+    let answers = vec![
+        Answer::new("Cancel", Box::new(|_| {})),
+        Answer::new(
+            "Delete",
+            Box::new(move |cx| {
+                let removed = if is_dir {
+                    std::fs::remove_dir_all(&path)
+                } else {
+                    std::fs::remove_file(&path)
+                };
+                if let Err(err) = removed {
+                    cx.editor.set_error(format!("{}: {}", path.display(), err));
+                    return;
+                }
+                close_documents_under(cx.editor, &path);
+                let parent = path
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| path.clone());
+                disk_changed(cx, parent);
+            }),
+        )
+        .destructive(),
+    ];
+    cx.push_layer(Box::new(Confirm::new("Confirm deletion", lines, answers)));
 }
 
 fn create_file(path: &Path) -> std::io::Result<()> {
