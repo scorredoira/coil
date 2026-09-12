@@ -1415,7 +1415,14 @@ impl EditorView {
 
         // The right button opens what can be done to what is under it.
         if kind == MouseEventKind::Down(MouseButton::Right) {
+            if let Some(BufferlineHit::Open(doc_id) | BufferlineHit::Close(doc_id)) =
+                self.bufferline_hit(row, column)
+            {
+                return open_tab_menu(row, column, doc_id);
+            }
+
             if let Some((pos, view_id)) = pos_and_view(cxt.editor, row, column, true) {
+                self.sidebar.focused = false;
                 cxt.editor.focus(view_id);
 
                 // Pointing outside the selection takes the caret there first: the menu acts
@@ -2044,10 +2051,42 @@ fn run_command(
     context_menu::with_context(compositor, outer, |cx| command.execute(cx));
 }
 
+/// Split the file that was pointed at, without replacing the current view.
+fn open_tab_menu(row: u16, column: u16, doc_id: helix_view::DocumentId) -> EventResult {
+    EventResult::Consumed(Some(Box::new(move |compositor, _cx| {
+        let entries = [
+            (
+                "Split vertically",
+                helix_view::editor::Action::VerticalSplit,
+            ),
+            (
+                "Split horizontally",
+                helix_view::editor::Action::HorizontalSplit,
+            ),
+        ]
+        .into_iter()
+        .map(|(label, action)| {
+            context_menu::Entry::new(
+                label,
+                "",
+                Box::new(move |compositor, cx| {
+                    let view = compositor.find::<EditorView>().unwrap();
+                    view.markdown_preview.full = false;
+                    view.sidebar.focused = false;
+                    cx.editor.switch(doc_id, action);
+                }),
+            )
+        })
+        .collect();
+        let menu = context_menu::ContextMenu::new((row, column), entries);
+        compositor.push(Box::new(menu));
+    })))
+}
+
 /// What can be done to the text under the pointer.
 fn open_editor_menu(row: u16, column: u16) -> EventResult {
-    EventResult::Consumed(Some(Box::new(move |compositor, _cx| {
-        let entries = vec![
+    EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+        let mut entries = vec![
             context_menu::Entry::new(
                 "Cut",
                 "Ctrl-x",
@@ -2083,7 +2122,27 @@ fn open_editor_menu(row: u16, column: u16) -> EventResult {
                     run_command(compositor, cx, MappableCommand::rename_symbol)
                 }),
             ),
+            context_menu::Entry::new(
+                "Split vertically",
+                "",
+                Box::new(|compositor, cx| run_command(compositor, cx, MappableCommand::vsplit)),
+            ),
+            context_menu::Entry::new(
+                "Split horizontally",
+                "",
+                Box::new(|compositor, cx| run_command(compositor, cx, MappableCommand::hsplit)),
+            ),
         ];
+
+        // Closing the last view exits the editor; this menu only closes a split.
+        if cx.editor.tree.views().count() > 1 {
+            let close = context_menu::Entry::new(
+                "Close split",
+                "",
+                Box::new(|compositor, cx| run_command(compositor, cx, MappableCommand::wclose)),
+            );
+            entries.push(close);
+        }
 
         compositor.push(Box::new(context_menu::ContextMenu::new(
             (row, column),

@@ -99,10 +99,16 @@ reaches the file behind it.
 ## Tabs, splits and the mouse
 
 Buffers are tabs you can click, each with a cross that closes it, and there is a
-tab even when only one file is open. The right button in the editor opens what
-can be done where it landed: cut, copy, paste, go to the definition, rename the
-symbol. Opening the
-editor on a project with no file named reopens the files it had open, the one
+tab even when only one file is open. Right-click a tab to split its file vertically
+(side by side) or horizontally (stacked), keeping the current view open.
+The right button in the editor opens what can be done where it landed:
+cut, copy, paste, go to the definition, rename the
+symbol, or split vertically or horizontally. With more than one pane open,
+**Close split** closes the pane you right-clicked, keeping its file in the tabs.
+
+![Right-click a document to split it or close its pane](fork/screenshots/split-menu.png)
+
+Opening the editor on a project with no file named reopens the files it had open, the one
 you were on in front; naming a file opens that file alone, and the settings
 screen turns it off altogether. Splits resize by dragging the line between two
 side by side, or the status line between two stacked. In the pickers a click

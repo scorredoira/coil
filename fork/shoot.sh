@@ -162,6 +162,13 @@ keys Space T
 keys Escape
 shoot splits
 
+# The document menu with both split directions and the way back to one pane.
+start --vsplit helix-term/src/ui/sidebar/mod.rs helix-term/src/ui/sidebar/tab.rs
+# SGR mouse: right button down at column 80, row 10 (one-based).
+tmux -L "$socket" send-keys -t shot -H 1b 5b 3c 32 3b 38 30 3b 31 30 4d
+keys Down Down Down Down Down Down Down
+shoot split-menu
+
 start helix-term/src/ui/picker.rs
 keys Space H
 shoot history 2
