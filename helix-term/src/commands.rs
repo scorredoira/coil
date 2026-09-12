@@ -420,6 +420,7 @@ impl MappableCommand {
         sidebar_focus, "Focus the sidebar, opening it if closed",
         sidebar_toggle, "Show or hide the sidebar",
         markdown_preview_toggle, "Show or hide the Markdown preview beside the file",
+        markdown_preview_full, "Show or hide the Markdown preview on its own, filling the screen",
         quit_saving, "Save every file that has one and quit, asking about what cannot be saved",
         settings, "Show the settings, and write what you change to config.toml",
         file_history, "Show the history of the current file in the sidebar",
@@ -4307,6 +4308,13 @@ fn markdown_preview_toggle(_cx: &mut Context) {
     job::dispatch_blocking(|editor, compositor| {
         let editor_view = compositor.find::<ui::EditorView>().unwrap();
         editor_view.markdown_preview.toggle(editor);
+    });
+}
+
+fn markdown_preview_full(_cx: &mut Context) {
+    job::dispatch_blocking(|editor, compositor| {
+        let editor_view = compositor.find::<ui::EditorView>().unwrap();
+        editor_view.markdown_preview.toggle_full(editor);
     });
 }
 

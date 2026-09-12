@@ -19,7 +19,6 @@ pub mod tab;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use anyhow::Context as _;
 use helix_view::graphics::{Modifier, Rect};
 use helix_view::input::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use helix_view::keyboard::{KeyCode, KeyModifiers};
@@ -29,6 +28,7 @@ use tui::buffer::Buffer as Surface;
 use crate::commands;
 use crate::compositor::EventResult;
 use crate::ui::editor;
+use crate::ui::panel_width;
 
 use changes::ChangesTab;
 use commits::CommitsTab;
@@ -50,6 +50,9 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(500);
 
 /// The narrowest the separator can be dragged to.
 const MIN_WIDTH: u16 = 12;
+
+/// Where the width the separator was dragged to is remembered.
+const WIDTH_FILE: &str = "sidebar";
 
 /// The columns the sidebar always leaves to the editor, however wide it is asked to be.
 pub const EDITOR_ROOM: u16 = 20;
@@ -114,7 +117,7 @@ fn is_editor_shortcut(key: KeyEvent) -> bool {
 impl Sidebar {
     pub fn new(root: PathBuf, open: bool) -> Self {
         // A broken file costs the remembered width, not the sidebar.
-        let (width, width_error) = match load_width() {
+        let (width, width_error) = match panel_width::load(WIDTH_FILE) {
             Ok(width) => (width, None),
             Err(err) => {
                 log::error!("Could not read the sidebar's width: {err:#}");
@@ -492,7 +495,7 @@ impl Sidebar {
             MouseEventKind::Up(MouseButton::Left) if self.resizing => {
                 self.resizing = false;
                 if let Some(width) = self.width {
-                    if let Err(err) = save_width(width) {
+                    if let Err(err) = panel_width::save(WIDTH_FILE, width) {
                         log::error!("Could not remember the sidebar's width: {err:#}");
                         editor
                             .set_error(format!("Could not remember the sidebar's width: {err:#}"));
@@ -677,42 +680,6 @@ pub(crate) fn later(
     then: impl FnOnce(&mut Sidebar, &mut Editor) + Send + 'static,
 ) {
     editor::later(delay, move |editor, view| then(&mut view.sidebar, editor));
-}
-
-/// What the sidebar remembers between sessions.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct SavedState {
-    width: u16,
-}
-
-fn state_file() -> PathBuf {
-    helix_loader::data_dir().join("sidebar.toml")
-}
-
-/// The width the separator was last dragged to; none before it ever was.
-fn load_width() -> anyhow::Result<Option<u16>> {
-    let path = state_file();
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
-    };
-    let state: SavedState =
-        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
-    Ok(Some(state.width))
-}
-
-/// Written aside and renamed over, so another helix reading it never sees half.
-fn save_width(width: u16) -> anyhow::Result<()> {
-    let path = state_file();
-    let dir = helix_loader::data_dir();
-    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-
-    let text = toml::to_string(&SavedState { width })?;
-    let temp = dir.join(format!(".sidebar.{}.toml", std::process::id()));
-    std::fs::write(&temp, text).with_context(|| format!("writing {}", temp.display()))?;
-    std::fs::rename(&temp, &path).with_context(|| format!("replacing {}", path.display()))?;
-    Ok(())
 }
 
 #[cfg(test)]

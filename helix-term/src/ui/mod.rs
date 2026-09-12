@@ -8,6 +8,7 @@ mod markdown;
 pub mod markdown_preview;
 pub mod menu;
 pub mod overlay;
+mod panel_width;
 pub mod picker;
 pub mod popup;
 pub mod prompt;

@@ -5,7 +5,7 @@ use helix_core::{
 use helix_view::{
     current_ref, doc,
     graphics::{Modifier, Rect, Style, UnderlineStyle},
-    input::{MouseEvent, MouseEventKind},
+    input::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind},
     Document, DocumentId, Editor, Theme,
 };
 use pulldown_cmark::{
@@ -16,11 +16,22 @@ use tui::{
     text::{Span, Spans},
 };
 
-use crate::{compositor::EventResult, ui::markdown::highlighted_code_block};
+use crate::{
+    commands,
+    compositor::EventResult,
+    ui::{markdown::highlighted_code_block, panel_width, sidebar::EDITOR_ROOM},
+};
 
 /// Under this many columns a preview is not worth drawing, and the file being edited
 /// keeps the room.
 const MIN_WIDTH: u16 = 30;
+
+/// The widest the text is drawn at when the preview has the whole screen: a line running
+/// the width of a terminal is not a line anybody reads.
+const READING_WIDTH: u16 = 90;
+
+/// Where the width the separator was dragged to is remembered.
+const WIDTH_FILE: &str = "preview";
 
 /// The focused Markdown file drawn beside it as it reads: headings, lists, quotes,
 /// tables and highlighted code, reflowed to the panel's width. It follows the file's
@@ -28,8 +39,14 @@ const MIN_WIDTH: u16 = 30;
 #[derive(Default)]
 pub struct MarkdownPreview {
     pub open: bool,
+    /// Whether the preview has the screen to itself, the file behind it.
+    pub full: bool,
     /// Where it was drawn last, empty while it is not on screen.
     area: Rect,
+    /// The width the separator was dragged to, kept between sessions over half the screen.
+    width: Option<u16>,
+    /// Whether the separator is being dragged, so the mouse is the preview's wherever it goes.
+    resizing: bool,
     rendered: Option<Rendered>,
     scrolled: Option<Scrolled>,
 }
@@ -60,6 +77,22 @@ pub struct Row {
 }
 
 impl MarkdownPreview {
+    /// A width file that cannot be read costs the remembered width, not the preview.
+    pub fn new() -> Self {
+        let width = match panel_width::load(WIDTH_FILE) {
+            Ok(width) => width,
+            Err(err) => {
+                log::error!("Could not read the preview's width: {err:#}");
+                None
+            }
+        };
+
+        Self {
+            width,
+            ..Self::default()
+        }
+    }
+
     pub fn toggle(&mut self, editor: &mut Editor) {
         if self.open {
             self.open = false;
@@ -75,19 +108,52 @@ impl MarkdownPreview {
         self.scrolled = None;
     }
 
-    /// The columns the preview takes from the right of `area`: none while it is closed
-    /// or the focused file is not Markdown.
+    /// Show or hide the preview on its own, filling the screen.
+    pub fn toggle_full(&mut self, editor: &mut Editor) {
+        if self.full {
+            self.full = false;
+            return;
+        }
+
+        if !is_markdown(doc!(editor)) {
+            editor.set_error("The preview is for Markdown files");
+            return;
+        }
+
+        self.full = true;
+        self.scrolled = None;
+    }
+
+    /// Whether the preview is the one thing on screen. The editor moving to a file that
+    /// is not Markdown closes it: there is nothing left to draw.
+    pub fn is_full(&mut self, editor: &Editor) -> bool {
+        if self.full && !is_markdown(doc!(editor)) {
+            self.full = false;
+        }
+
+        self.full
+    }
+
+    /// The columns the preview takes from the right of `area`: none while it is closed,
+    /// the focused file is not Markdown, or what is left would not be worth drawing.
     pub fn width(&self, editor: &Editor, area: Rect) -> u16 {
         if !self.open || !is_markdown(doc!(editor)) {
             return 0;
         }
 
-        let width = area.width / 2;
+        let wanted = self.width.unwrap_or(area.width / 2);
+        let width = wanted.min(area.width.saturating_sub(EDITOR_ROOM));
         if width < MIN_WIDTH {
             0
         } else {
             width
         }
+    }
+
+    /// Whether the separator is being dragged: the mouse is the preview's until it is
+    /// let go, wherever it has gone.
+    pub fn resizing(&self) -> bool {
+        self.resizing
     }
 
     /// Off the screen: the mouse no longer lands on it.
@@ -102,11 +168,65 @@ impl MarkdownPreview {
             && column < self.area.right()
     }
 
-    pub fn handle_mouse(&mut self, event: &MouseEvent, editor: &Editor) -> EventResult {
+    /// A key while the preview has the screen. It scrolls, and Escape closes it; anything
+    /// else bare is swallowed, since the file is not on screen for a command to act on and
+    /// a blind edit is the one thing a reading surface must not allow. A key with a
+    /// modifier is one of the editor's shortcuts and goes on to the keymap.
+    pub fn handle_key(&mut self, key: KeyEvent, editor: &Editor) -> EventResult {
+        if !key.modifiers.is_empty() {
+            return EventResult::Ignored(None);
+        }
+
         let lines = editor.config().scroll_lines;
+        let page = self.area.height.saturating_sub(2) as isize;
+
+        match key.code {
+            KeyCode::Esc => self.full = false,
+            KeyCode::Down => self.scroll_by(editor, 1),
+            KeyCode::Up => self.scroll_by(editor, -1),
+            KeyCode::PageDown | KeyCode::Char(' ') => self.scroll_by(editor, page),
+            KeyCode::PageUp => self.scroll_by(editor, -page),
+            KeyCode::Home => self.scroll_by(editor, isize::MIN),
+            KeyCode::End => self.scroll_by(editor, isize::MAX),
+            KeyCode::Char('j') => self.scroll_by(editor, lines),
+            KeyCode::Char('k') => self.scroll_by(editor, -lines),
+            _ => {}
+        }
+
+        EventResult::Consumed(None)
+    }
+
+    pub fn handle_mouse(&mut self, event: &MouseEvent, cx: &mut commands::Context) -> EventResult {
+        let lines = cx.editor.config().scroll_lines;
+
         match event.kind {
-            MouseEventKind::ScrollDown => self.scroll_by(editor, lines),
-            MouseEventKind::ScrollUp => self.scroll_by(editor, -lines),
+            // The separator is the preview's first column, so the panel follows the mouse
+            // as it grows to the left.
+            MouseEventKind::Down(MouseButton::Left)
+                if !self.full && event.column == self.area.x =>
+            {
+                self.resizing = true;
+            }
+            MouseEventKind::Drag(MouseButton::Left) if self.resizing => {
+                let total = self.area.width + cx.editor.tree.area().width;
+                let most = total.saturating_sub(EDITOR_ROOM).max(MIN_WIDTH);
+                let wanted = self.area.right().saturating_sub(event.column);
+                self.width = Some(wanted.clamp(MIN_WIDTH, most));
+            }
+            MouseEventKind::Up(MouseButton::Left) if self.resizing => {
+                self.resizing = false;
+                let Some(width) = self.width else {
+                    return EventResult::Consumed(None);
+                };
+
+                if let Err(err) = panel_width::save(WIDTH_FILE, width) {
+                    log::error!("Could not remember the preview's width: {err:#}");
+                    cx.editor
+                        .set_error(format!("Could not remember the preview's width: {err:#}"));
+                }
+            }
+            MouseEventKind::ScrollDown => self.scroll_by(cx.editor, lines),
+            MouseEventKind::ScrollUp => self.scroll_by(cx.editor, -lines),
             _ => {}
         }
 
@@ -151,10 +271,9 @@ impl MarkdownPreview {
     }
 
     pub fn render(&mut self, area: Rect, surface: &mut Surface, editor: &Editor) {
-        self.area = area;
-
         let theme = &editor.theme;
         surface.clear_with(area, theme.get("ui.background"));
+
         let separator = theme.get("ui.window");
         for y in area.y..area.bottom() {
             surface.set_string(area.x, y, "│", separator);
@@ -162,6 +281,25 @@ impl MarkdownPreview {
 
         // A column of air on each side of the text.
         let content = area.clip_left(2).clip_right(1);
+        self.draw(area, content, surface, editor);
+    }
+
+    /// The preview with the screen to itself: no separator, and the text in a column of
+    /// its own width in the middle of it.
+    pub fn render_full(&mut self, area: Rect, surface: &mut Surface, editor: &Editor) {
+        surface.clear_with(area, editor.theme.get("ui.background"));
+
+        let width = READING_WIDTH.min(area.width.saturating_sub(4));
+        let margin = (area.width - width) / 2;
+        let content = area.clip_left(margin).with_width(width);
+
+        self.draw(area, content, surface, editor);
+    }
+
+    fn draw(&mut self, area: Rect, content: Rect, surface: &mut Surface, editor: &Editor) {
+        self.area = area;
+
+        let theme = &editor.theme;
         let (view, doc) = current_ref!(editor);
         let stale = match &self.rendered {
             Some(rendered) => {

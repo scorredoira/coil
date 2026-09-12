@@ -63,12 +63,15 @@ struct BufferlineTab {
     /// The column of its close mark.
     close: u16,
     doc: helix_view::DocumentId,
+    /// The tab is the file's preview rather than the file itself.
+    preview: bool,
 }
 
 /// Where a click on the bufferline landed.
 enum BufferlineHit {
     Open(helix_view::DocumentId),
     Close(helix_view::DocumentId),
+    ClosePreview,
 }
 
 /// The bufferline's rows: a half-row of padding over the names and one under them.
@@ -96,7 +99,7 @@ impl EditorView {
             spinners: ProgressSpinners::default(),
             terminal_focused: true,
             sidebar,
-            markdown_preview: MarkdownPreview::default(),
+            markdown_preview: MarkdownPreview::new(),
             last_blame: None,
             bufferline_tabs: Vec::new(),
             dragged_separator: None,
@@ -732,6 +735,10 @@ impl EditorView {
         let mut x = viewport.x;
         let current_doc = view!(editor).doc;
 
+        // The preview filling the screen is a tab of its own beside its file's, and it is
+        // the one lit: the file it renders is not what you are looking at.
+        let full_preview = self.markdown_preview.is_full(editor);
+
         for doc in editor.documents() {
             let fname = match doc.path() {
                 Some(path) => path
@@ -742,44 +749,57 @@ impl EditorView {
                 None => doc.scratch_name(),
             };
 
-            let style = if current_doc == doc.id() {
-                bufferline_active
-            } else {
-                bufferline_inactive
-            };
-            let tab_background = style.bg.or(background);
+            let is_current = current_doc == doc.id();
 
             // A modified buffer shows a dot where the cross goes, as it cannot be
             // closed without losing its changes.
             let mark = if doc.is_modified() { "●" } else { "×" };
-            let name = format!("  {fname}  ");
-            let width = name.width() as u16 + mark.width() as u16 + 2;
-
-            // A tab that would not fit whole is not drawn: half a tab hides its
-            // cross, and the cross is what a click aims for.
-            if x + width > viewport.right() {
-                break;
+            let mut tabs = vec![(
+                format!("  {fname}  "),
+                mark,
+                is_current && !full_preview,
+                false,
+            )];
+            if full_preview && is_current {
+                tabs.push((format!("  {fname} ✓  "), "×", true, true));
             }
 
-            let area = Rect::new(x, top, width, BUFFERLINE_HEIGHT);
-            for column in area.left()..area.right() {
-                draw_half_block(surface, column, top, background, tab_background);
-                draw_half_block(surface, column, bottom, tab_background, editor_background);
+            for (name, mark, active, preview) in tabs {
+                let style = if active {
+                    bufferline_active
+                } else {
+                    bufferline_inactive
+                };
+                let tab_background = style.bg.or(background);
+                let width = name.width() as u16 + mark.width() as u16 + 2;
+
+                // A tab that would not fit whole is not drawn: half a tab hides its
+                // cross, and the cross is what a click aims for.
+                if x + width > viewport.right() {
+                    return;
+                }
+
+                let area = Rect::new(x, top, width, BUFFERLINE_HEIGHT);
+                for column in area.left()..area.right() {
+                    draw_half_block(surface, column, top, background, tab_background);
+                    draw_half_block(surface, column, bottom, tab_background, editor_background);
+                }
+
+                let close = x + name.width() as u16;
+                surface.set_string(x, middle, &name, style);
+                surface.set_string(close, middle, mark, style);
+                surface.set_string(close + mark.width() as u16, middle, "  ", style);
+
+                self.bufferline_tabs.push(BufferlineTab {
+                    area,
+                    close,
+                    doc: doc.id(),
+                    preview,
+                });
+
+                // One column of bar between tabs.
+                x += width + 1;
             }
-
-            let close = x + name.width() as u16;
-            surface.set_string(x, middle, &name, style);
-            surface.set_string(close, middle, mark, style);
-            surface.set_string(close + mark.width() as u16, middle, "  ", style);
-
-            self.bufferline_tabs.push(BufferlineTab {
-                area,
-                close,
-                doc: doc.id(),
-            });
-
-            // One column of bar between tabs.
-            x += width + 1;
         }
     }
 
@@ -793,11 +813,14 @@ impl EditorView {
         })?;
 
         // The cross takes a column either side too: a single cell is a small target.
-        if column + 1 >= tab.close && column <= tab.close + 1 {
-            return Some(BufferlineHit::Close(tab.doc));
-        }
+        let closing = column + 1 >= tab.close && column <= tab.close + 1;
 
-        Some(BufferlineHit::Open(tab.doc))
+        match (tab.preview, closing) {
+            (true, true) => Some(BufferlineHit::ClosePreview),
+            (true, false) => None,
+            (false, true) => Some(BufferlineHit::Close(tab.doc)),
+            (false, false) => Some(BufferlineHit::Open(tab.doc)),
+        }
     }
 
     pub fn render_gutter<'d>(
@@ -1310,8 +1333,9 @@ impl EditorView {
             return self.sidebar.handle_mouse(event, cxt);
         }
 
-        if self.markdown_preview.contains(row, column) {
-            return self.markdown_preview.handle_mouse(event, cxt.editor);
+        // A drag of the preview's separator stays the preview's when the mouse leaves it.
+        if self.markdown_preview.contains(row, column) || self.markdown_preview.resizing() {
+            return self.markdown_preview.handle_mouse(event, cxt);
         }
 
         // A split separator is taken before the views see the press, and while it is dragged
@@ -1341,8 +1365,14 @@ impl EditorView {
         if kind == MouseEventKind::Down(MouseButton::Left) {
             match self.bufferline_hit(row, column) {
                 Some(BufferlineHit::Open(doc_id)) => {
+                    // Going to a file closes the preview: it is what the screen was showing.
+                    self.markdown_preview.full = false;
                     cxt.editor
                         .switch(doc_id, helix_view::editor::Action::Replace);
+                    return EventResult::Consumed(None);
+                }
+                Some(BufferlineHit::ClosePreview) => {
+                    self.markdown_preview.full = false;
                     return EventResult::Consumed(None);
                 }
                 Some(BufferlineHit::Close(doc_id)) => {
@@ -1633,6 +1663,17 @@ impl Component for EditorView {
 
                 let mode = cx.editor.mode();
 
+                // The preview filling the screen takes the key first: it scrolls and closes
+                // on its own, and swallows the rest so no command edits the file nobody
+                // can see. A shortcut carries a modifier and goes on to the keymap.
+                if self.markdown_preview.is_full(cx.editor) && self.on_next_key.is_none() {
+                    if let EventResult::Consumed(_) =
+                        self.markdown_preview.handle_key(key, cx.editor)
+                    {
+                        return EventResult::Consumed(None);
+                    }
+                }
+
                 // A key the sidebar passes on is the editor's, and goes on to the keymap below.
                 if self.sidebar.focused && self.on_next_key.is_none() {
                     if let EventResult::Consumed(_) = self.sidebar.handle_key(key, &mut cx) {
@@ -1796,7 +1837,12 @@ impl Component for EditorView {
             self.sidebar.render(sidebar_area, surface, cx.editor);
             editor_area = editor_area.clip_left(sidebar_width);
         }
-        let preview_width = self.markdown_preview.width(cx.editor, editor_area);
+        let full_preview = self.markdown_preview.is_full(cx.editor);
+        let preview_width = if full_preview {
+            0
+        } else {
+            self.markdown_preview.width(cx.editor, editor_area)
+        };
         let preview_area = editor_area.clip_left(editor_area.width - preview_width);
         editor_area = editor_area.clip_right(preview_width);
         if use_bufferline {
@@ -1814,17 +1860,24 @@ impl Component for EditorView {
             self.bufferline_tabs.clear();
         }
 
-        for (view, is_focused) in cx.editor.tree.views() {
-            let doc = cx.editor.document(view.doc).unwrap();
-            self.render_view(cx.editor, doc, view, editor_area, surface, is_focused);
-        }
-
-        // After the views, so it follows where they scrolled this frame.
-        if preview_width > 0 {
+        // The preview on its own takes the room the views would have had, and they are
+        // not drawn at all: the file is behind it.
+        if full_preview {
             self.markdown_preview
-                .render(preview_area, surface, cx.editor);
+                .render_full(editor_area, surface, cx.editor);
         } else {
-            self.markdown_preview.hide();
+            for (view, is_focused) in cx.editor.tree.views() {
+                let doc = cx.editor.document(view.doc).unwrap();
+                self.render_view(cx.editor, doc, view, editor_area, surface, is_focused);
+            }
+
+            // After the views, so it follows where they scrolled this frame.
+            if preview_width > 0 {
+                self.markdown_preview
+                    .render(preview_area, surface, cx.editor);
+            } else {
+                self.markdown_preview.hide();
+            }
         }
 
         if config.auto_info {
@@ -1916,9 +1969,11 @@ impl Component for EditorView {
     }
 
     fn cursor(&self, _area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
-        if self.sidebar.focused {
+        // Nothing on screen is being edited while the preview has it to itself.
+        if self.sidebar.focused || self.markdown_preview.full {
             return (None, CursorKind::Hidden);
         }
+
         match editor.cursor() {
             // all block cursors are drawn manually
             (pos, CursorKind::Block) => {

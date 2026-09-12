@@ -77,12 +77,22 @@ border: the matches listed by line, the file beside them, the same switches.
 
 ## Markdown, as it reads
 
-`Ctrl-Shift-m` draws the Markdown file you are editing beside it: headings,
-lists and tasks, quotes and GitHub's alerts, tables lined up, code highlighted,
-all reflowed to the panel. It redraws as you type and keeps to the part of the
-file on screen; the wheel over it scrolls it on its own until the file moves.
+`Alt-m` draws the Markdown file you are editing beside it: headings, lists and
+tasks, quotes and GitHub's alerts, tables lined up, code highlighted, all
+reflowed to the panel. It redraws as you type and keeps to the part of the file
+on screen; the wheel over it scrolls it on its own until the file moves, and
+dragging the line between the file and the panel resizes it: the width is
+remembered.
 
 ![A README and its preview side by side](fork/screenshots/preview.png)
+
+`Ctrl-Shift-m` gives it the whole screen instead, the text in a column of its
+own width, as one more tab beside the file's: closing the tab is closing the
+preview. There the arrows, `PageUp` and `PageDown`, `Home` and `End` scroll it
+and `Escape` closes it. The editor's own shortcuts still work; nothing else
+reaches the file behind it.
+
+![The same README with the screen to itself](fork/screenshots/preview-full.png)
 
 ## Tabs, splits and the mouse
 
@@ -109,7 +119,8 @@ you already know:
 | `Ctrl-f` | Search and replace in this file |
 | `Ctrl-g` | Go to a line |
 | `Alt-z` | Wrap long lines, or stop |
-| `Ctrl-Shift-m` | Show or hide the Markdown preview |
+| `Alt-m` | Show or hide the Markdown preview beside the file |
+| `Ctrl-Shift-m` | The Markdown preview on its own, filling the screen |
 | `F12` / `Shift-F12` | Go to the definition / to the references |
 | `F2` | Rename the symbol |
 | `F8` | Next diagnostic |

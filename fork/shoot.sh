@@ -107,16 +107,25 @@ keys Tab
 typed selected
 shoot search-file 2
 
-# Ctrl-Shift-m cannot cross tmux, so the preview is asked for by name.
 start README.md
-keys Space '?'
-typed markdown_preview_toggle
-keys Enter
+keys M-m
 keys C-g
 typed "$(grep -n -m1 '^## Ready as installed' "$demo/README.md" | cut -d: -f1)"
 keys Enter
 keys z t
 shoot preview
+
+# The same file with the preview on its own, a tab of its own beside it. Two files
+# open, so the bufferline is there to show the tab.
+start README.md helix-term/src/ui/editor.rs
+keys C-g
+typed "$(grep -n -m1 '^## Ready as installed' "$demo/README.md" | cut -d: -f1)"
+keys Enter
+keys z t
+keys Space '?'
+typed markdown_preview_full
+keys Enter
+shoot preview-full
 
 # The settings, opened by name so the picture does not depend on the terminal
 # forwarding Ctrl and a comma.
