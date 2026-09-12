@@ -1,11 +1,12 @@
 use crate::{
     commands::{self, git::LastBlame, OnKeyCallback, OnKeyCallbackKind},
-    compositor::{Component, Context, Event, EventResult},
+    compositor::{self, Component, Compositor, Context, Event, EventResult},
     events::{OnModeSwitch, PostCommand},
     handlers::completion::CompletionItem,
     key,
-    keymap::{KeymapResult, Keymaps},
+    keymap::{KeymapResult, Keymaps, MappableCommand},
     ui::{
+        context_menu,
         document::{render_document, LinePos, TextRenderer},
         markdown_preview::MarkdownPreview,
         sidebar::{self, Sidebar},
@@ -1412,6 +1413,27 @@ impl EditorView {
             })
         };
 
+        // The right button opens what can be done to what is under it.
+        if kind == MouseEventKind::Down(MouseButton::Right) {
+            if let Some((pos, view_id)) = pos_and_view(cxt.editor, row, column, true) {
+                cxt.editor.focus(view_id);
+
+                // Pointing outside the selection takes the caret there first: the menu acts
+                // on what was pointed at, which is what every other editor does.
+                let (view, doc) = current!(cxt.editor);
+                let pointed = doc
+                    .selection(view.id)
+                    .ranges()
+                    .iter()
+                    .any(|range| range.from() <= pos && pos < range.to());
+                if !pointed {
+                    doc.set_selection(view.id, Selection::point(pos));
+                }
+
+                return open_editor_menu(row, column);
+            }
+        }
+
         match kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 let editor = &mut cxt.editor;
@@ -2011,6 +2033,63 @@ impl Component for EditorView {
             cursor => cursor,
         }
     }
+}
+
+/// Runs one of the editor's own commands from a menu.
+fn run_command(
+    compositor: &mut Compositor,
+    outer: &mut compositor::Context,
+    command: MappableCommand,
+) {
+    context_menu::with_context(compositor, outer, |cx| command.execute(cx));
+}
+
+/// What can be done to the text under the pointer.
+fn open_editor_menu(row: u16, column: u16) -> EventResult {
+    EventResult::Consumed(Some(Box::new(move |compositor, _cx| {
+        let entries = vec![
+            context_menu::Entry::new(
+                "Cut",
+                "Ctrl-x",
+                Box::new(|compositor, cx| {
+                    run_command(compositor, cx, MappableCommand::cut_to_clipboard)
+                }),
+            ),
+            context_menu::Entry::new(
+                "Copy",
+                "Ctrl-c",
+                Box::new(|compositor, cx| {
+                    run_command(compositor, cx, MappableCommand::copy_to_clipboard)
+                }),
+            ),
+            context_menu::Entry::new(
+                "Paste",
+                "Ctrl-v",
+                Box::new(|compositor, cx| {
+                    run_command(compositor, cx, MappableCommand::paste_from_clipboard)
+                }),
+            ),
+            context_menu::Entry::new(
+                "Go to the definition",
+                "F12",
+                Box::new(|compositor, cx| {
+                    run_command(compositor, cx, MappableCommand::goto_definition)
+                }),
+            ),
+            context_menu::Entry::new(
+                "Rename the symbol",
+                "F2",
+                Box::new(|compositor, cx| {
+                    run_command(compositor, cx, MappableCommand::rename_symbol)
+                }),
+            ),
+        ];
+
+        compositor.push(Box::new(context_menu::ContextMenu::new(
+            (row, column),
+            entries,
+        )));
+    })))
 }
 
 fn canonicalize_key(key: &mut KeyEvent) {

@@ -515,6 +515,7 @@ impl MappableCommand {
         move_lines_up, "Move the lines the selection touches one line up",
         move_lines_down, "Move the lines the selection touches one line down",
         select_next_occurrence, "Select the word under the caret, then where it appears next",
+        select_all_occurrences, "Select every place the word under the caret appears",
         save_as, "Write the file under a name this asks for",
         copy_to_clipboard, "Copy the selection, or the whole line when there is none",
         cut_to_clipboard, "Cut the selection, or the whole line when there is none",
@@ -4268,12 +4269,11 @@ pub(crate) fn run_typable(cx: &mut compositor::Context, name: &str) {
     }
 }
 
-/// The files that are modified and have nowhere to be written: only these need asking
-/// about before anything closes.
-pub(crate) fn unsaveable(editor: &Editor) -> Vec<String> {
+/// The files with changes on them, whether they have somewhere to be written or not.
+pub(crate) fn unsaved(editor: &Editor) -> Vec<String> {
     editor
         .documents()
-        .filter(|doc| doc.is_modified() && doc.path().is_none())
+        .filter(|doc| doc.is_modified())
         .map(|doc| doc.display_name().to_string())
         .collect()
 }
@@ -4359,26 +4359,23 @@ fn settings(_cx: &mut Context) {
 /// Ctrl-q: what can be written is written and the editor closes. What cannot — a buffer
 /// with no file — is a question, and it is asked in the middle of the screen.
 fn quit_saving(cx: &mut Context) {
-    let unnamed = unsaveable(cx.editor);
-    if unnamed.is_empty() {
+    let unsaved = unsaved(cx.editor);
+    if unsaved.is_empty() {
         let mut cx = compositor::Context {
             editor: cx.editor,
             jobs: cx.jobs,
             scroll: None,
         };
-        run_typable(&mut cx, "write-quit-all");
+        run_typable(&mut cx, "quit-all");
         return;
     }
 
     // The dialog is built where it is pushed: what an answer carries cannot travel.
     job::dispatch_blocking(move |_editor, compositor| {
-        let verb = if unnamed.len() == 1 { "has" } else { "have" };
+        let verb = if unsaved.len() == 1 { "has" } else { "have" };
         let lines = vec![
-            format!(
-                "{} {verb} changes and no file to write them to.",
-                unnamed.join(", ")
-            ),
-            "Everything else is saved.".to_string(),
+            format!("{} {verb} changes.", unsaved.join(", ")),
+            "Nothing is written until you say so.".to_string(),
         ];
         let answers = vec![
             ui::confirm::Answer::new(
@@ -6326,6 +6323,53 @@ fn select_next_occurrence(cx: &mut Context) {
     }
 
     let taken = selection.push(next);
+    let (view, doc) = current!(cx.editor);
+    doc.set_selection(view.id, taken);
+    mark_insert_selection(cx.editor);
+}
+
+/// Every place the selection appears, each with a caret of its own.
+fn select_all_occurrences(cx: &mut Context) {
+    // Nothing taken yet: the word under the caret is what is being looked for.
+    if nothing_selected(cx.editor) {
+        select_next_occurrence(cx);
+    }
+
+    let (view, doc) = current_ref!(cx.editor);
+    let text = doc.text().slice(..);
+    let primary = doc.selection(view.id).primary();
+    let needle = text.slice(primary.from()..primary.to()).to_string();
+    if needle.is_empty() {
+        return;
+    }
+
+    let Ok(regex) = rope::RegexBuilder::new()
+        .syntax(rope::Config::new().multi_line(true))
+        .build(&regex::escape(&needle))
+    else {
+        return;
+    };
+
+    let mut ranges: Vec<Range> = Vec::new();
+    let mut primary_index = 0;
+    for found in regex.find_iter(text.regex_input()) {
+        let range = Range::new(
+            text.byte_to_char(found.start()),
+            text.byte_to_char(found.end()),
+        );
+
+        if range.from() == primary.from() {
+            primary_index = ranges.len();
+        }
+
+        ranges.push(range);
+    }
+
+    if ranges.is_empty() {
+        return;
+    }
+
+    let taken = Selection::new(ranges.into(), primary_index);
     let (view, doc) = current!(cx.editor);
     doc.set_selection(view.id, taken);
     mark_insert_selection(cx.editor);

@@ -20,12 +20,14 @@ tree-sitter — and Coil follows its `master`.
 ## A sidebar file tree
 
 The editor's own keys — `Ctrl-q`, `Ctrl-s`, `F12` — work while the sidebar has
-the focus; only its plain keys are its own.
+the focus.
 
-`Space t` shows or hides it, `Space T` focuses it; started on a file
+`Ctrl-b` shows or hides it and `Ctrl-Shift-e` focuses it; started on a file
 (`coil foo.ts`), the editor opens without it. It follows the file you are
-editing, and inside it `j`/`k` move, `Enter` opens, `a` creates, `r` renames,
-`d` deletes. A click opens a row, the wheel scrolls, and dragging the line
+editing, and inside it the arrows move, `Enter` opens, and **typing walks to the
+file whose name you are typing**, the way an explorer does. `Ctrl-n` creates,
+`F2` renames, `Delete` deletes, and the right button offers the same four on the
+row it lands on. A click opens a row, the wheel scrolls, and dragging the line
 between the tree and the editor resizes it: the width is remembered.
 
 ## What git sees changed
@@ -96,7 +98,10 @@ reaches the file behind it.
 
 ## Tabs, splits and the mouse
 
-Buffers are tabs you can click, each with a cross that closes it. Opening the
+Buffers are tabs you can click, each with a cross that closes it, and there is a
+tab even when only one file is open. The right button in the editor opens what
+can be done where it landed: cut, copy, paste, go to the definition, rename the
+symbol. Opening the
 editor on a project with no file named reopens the files it had open, the one
 you were on in front; naming a file opens that file alone, and the settings
 screen turns it off altogether. Splits resize by dragging the line between two
@@ -149,7 +154,7 @@ So the keys are the ones you already know:
 | `Alt-z` | Wrap long lines, or stop |
 | `Ctrl-Shift-b` | Show or hide the Markdown preview beside the file |
 | `Ctrl-Shift-m` | The Markdown preview on its own, filling the screen |
-| `Ctrl-q` | Save everything and quit |
+| `Ctrl-q` | Quit, asking about anything unsaved |
 | `Ctrl-,` | Settings |
 
 A `Cmd` or `Ctrl` key nothing is bound to never types its letter, and on a Mac

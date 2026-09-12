@@ -10,7 +10,7 @@ theme = { light = "github_light", dark = "github_dark" }
 default-mode = "insert"
 # Opening the editor on a project opens the files it had open.
 restore-session = true
-bufferline = "multiple"
+bufferline = "always"
 color-modes = true
 
 [editor.file-picker]
@@ -49,6 +49,7 @@ C-space = "completion"
 C-c = "copy_to_clipboard"
 C-v = "paste_from_clipboard"
 C-d = "select_next_occurrence"
+C-L = "select_all_occurrences"
 C-D = "duplicate_line"
 C-K = "delete_line"
 C-up = "move_lines_up"
@@ -57,6 +58,9 @@ C-S-up = "expand_selection"
 C-S-down = "shrink_selection"
 C-p = "file_picker"
 C-P = "command_palette"
+# The typed command line, whatever the mode: how a tool that drives the editor, like
+# the link handler behind a click in the terminal, reaches it now that ":" is text.
+F10 = "command_mode"
 C-F = "global_search"
 C-b = "sidebar_toggle"
 C-E = "sidebar_focus"
@@ -115,6 +119,7 @@ C-space = "completion"
 C-c = "copy_to_clipboard"
 C-v = "paste_from_clipboard"
 C-d = "select_next_occurrence"
+C-L = "select_all_occurrences"
 C-D = "duplicate_line"
 C-K = "delete_line"
 C-up = "move_lines_up"
@@ -123,6 +128,9 @@ C-S-up = "expand_selection"
 C-S-down = "shrink_selection"
 C-p = "file_picker"
 C-P = "command_palette"
+# The typed command line, whatever the mode: how a tool that drives the editor, like
+# the link handler behind a click in the terminal, reaches it now that ":" is text.
+F10 = "command_mode"
 C-F = "global_search"
 C-b = "sidebar_toggle"
 C-E = "sidebar_focus"
@@ -178,6 +186,7 @@ C-space = "completion"
 C-c = "copy_to_clipboard"
 C-v = "paste_from_clipboard"
 C-d = "select_next_occurrence"
+C-L = "select_all_occurrences"
 C-D = "duplicate_line"
 C-K = "delete_line"
 C-up = "move_lines_up"
@@ -186,6 +195,9 @@ C-S-up = "expand_selection"
 C-S-down = "shrink_selection"
 C-p = "file_picker"
 C-P = "command_palette"
+# The typed command line, whatever the mode: how a tool that drives the editor, like
+# the link handler behind a click in the terminal, reaches it now that ":" is text.
+F10 = "command_mode"
 C-F = "global_search"
 C-b = "sidebar_toggle"
 C-E = "sidebar_focus"
@@ -214,6 +226,12 @@ Cmd-F = "global_search"
 esc = "escape"
 C-left = "move_prev_word_start"
 C-right = "move_next_word_start"
+A-left = "move_prev_word_start"
+A-right = "move_next_word_start"
+# Option and an arrow is what a Mac sends for those, and it sends them the old way: as
+# Escape and a letter, which is Alt-b and Alt-f.
+A-b = "move_prev_word_start"
+A-f = "move_next_word_start"
 C-backspace = "delete_word_backward"
 C-del = "delete_word_forward"
 # The emacs keys, off: they are what a stray control sequence lands on, and what it lands

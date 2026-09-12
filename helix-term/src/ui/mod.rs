@@ -1,6 +1,7 @@
 pub mod ask;
 mod completion;
 pub mod confirm;
+pub mod context_menu;
 mod document;
 pub(crate) mod editor;
 mod info;

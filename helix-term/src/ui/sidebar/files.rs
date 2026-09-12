@@ -11,7 +11,9 @@ use super::entries::{self, Folds, Row};
 use super::list::List;
 use super::tab::{Activation, Outcome, TabContext, TabView};
 use crate::commands;
+use crate::compositor;
 use crate::job;
+use crate::ui;
 use crate::ui::{EditorView, Prompt, PromptEvent};
 
 pub struct FilesTab {
@@ -109,6 +111,7 @@ impl TabView for FilesTab {
 }
 
 /// Where a prompt acts: the workspace, and the entry under the cursor when it needs one.
+#[derive(Clone)]
 pub struct PromptTarget {
     pub root: PathBuf,
     pub path: Option<PathBuf>,
@@ -146,14 +149,11 @@ pub fn prompt_new(cx: &mut commands::Context, target: PromptTarget) {
         line.push('/');
     }
     let root = target.root;
-    let prompt = Prompt::new(
-        "new (end with / for a directory): ".into(),
-        None,
-        |_editor, _input| Vec::new(),
-        move |cx, input, event| {
-            if event != PromptEvent::Validate || input.trim().is_empty() {
-                return;
-            }
+    let ask = ui::ask::Ask::new(
+        "New file or folder",
+        "A name ending in / makes a folder",
+        "Create",
+        Box::new(move |cx: &mut compositor::Context, input: String| {
             let made = root.join(input.trim());
             let result = if input.trim_end().ends_with('/') {
                 std::fs::create_dir_all(&made)
@@ -170,10 +170,11 @@ pub fn prompt_new(cx: &mut commands::Context, target: PromptTarget) {
                 }
             }
             disk_changed(cx, made);
-        },
+        }),
     )
-    .with_line(line, cx.editor);
-    cx.push_layer(Box::new(prompt));
+    .with_line(&line);
+
+    cx.push_layer(Box::new(ask));
 }
 
 /// `r`: the entry under the cursor gets a new name, its open buffers going along.
@@ -183,14 +184,11 @@ pub fn prompt_rename(cx: &mut commands::Context, target: PromptTarget) {
     };
     let line = target.relative(&source);
     let root = target.root;
-    let prompt = Prompt::new(
-        "rename: ".into(),
-        None,
-        |_editor, _input| Vec::new(),
-        move |cx, input, event| {
-            if event != PromptEvent::Validate || input.trim().is_empty() {
-                return;
-            }
+    let ask = ui::ask::Ask::new(
+        "Rename",
+        "The new name, or a path to move it to",
+        "Rename",
+        Box::new(move |cx: &mut compositor::Context, input: String| {
             let renamed_to = root.join(input.trim().trim_end_matches('/'));
             if renamed_to == source {
                 return;
@@ -212,10 +210,11 @@ pub fn prompt_rename(cx: &mut commands::Context, target: PromptTarget) {
             }
             retarget_documents(cx.editor, &source, &renamed_to);
             disk_changed(cx, renamed_to);
-        },
+        }),
     )
-    .with_line(line, cx.editor);
-    cx.push_layer(Box::new(prompt));
+    .with_line(&line);
+
+    cx.push_layer(Box::new(ask));
 }
 
 /// `d`: the entry under the cursor is deleted after a confirmation, its buffers closed.

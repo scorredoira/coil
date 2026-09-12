@@ -240,6 +240,10 @@ mod tests {
 
         assert_eq!(config.editor.soft_wrap.enable, Some(true));
         assert!(!config.editor.file_picker.git_ignore);
+        assert!(matches!(
+            config.editor.bufferline,
+            helix_view::editor::BufferLine::Always
+        ));
         // Nothing is written for you: what is open and changed is asked about instead.
         assert!(!config.editor.auto_save.focus_lost);
         assert!(!config.editor.auto_save.after_delay.enable);
@@ -357,6 +361,10 @@ mod tests {
         );
         // And what neither names stays Coil's.
         assert!(!config.editor.file_picker.git_ignore);
+        assert!(matches!(
+            config.editor.bufferline,
+            helix_view::editor::BufferLine::Always
+        ));
     }
 
     #[test]

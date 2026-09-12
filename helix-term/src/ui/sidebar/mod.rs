@@ -27,6 +27,7 @@ use tui::buffer::Buffer as Surface;
 
 use crate::commands;
 use crate::compositor::EventResult;
+use crate::ui::context_menu;
 use crate::ui::editor;
 use crate::ui::panel_width;
 
@@ -47,6 +48,9 @@ pub const REFRESH: Duration = Duration::from_secs(2);
 /// Two clicks on the same row closer than this are a double click: the terminal reports
 /// each press on its own, so the sidebar tells them apart itself.
 const DOUBLE_CLICK: Duration = Duration::from_millis(500);
+
+/// How long a letter typed in the tree waits for the next one before it starts a new name.
+const TYPING: Duration = Duration::from_millis(800);
 
 /// The narrowest the separator can be dragged to.
 const MIN_WIDTH: u16 = 12;
@@ -100,6 +104,8 @@ pub struct Sidebar {
     width_error: Option<String>,
     /// The row last clicked and when, so a second click on it soon after is a double click.
     last_click: Option<(usize, Instant)>,
+    /// What has been typed to walk to a row by name, and when the last letter landed.
+    typed: (String, Option<Instant>),
 }
 
 /// Whether a key is a shortcut of the editor's rather than one of the sidebar's. A key
@@ -142,6 +148,7 @@ impl Sidebar {
             resizing: false,
             width_error,
             last_click: None,
+            typed: (String::new(), None),
         }
     }
 
@@ -388,14 +395,10 @@ impl Sidebar {
                     self.focused = false;
                 }
             }
-            (KeyCode::Char('q'), KeyModifiers::NONE) => {
-                self.open = false;
-                self.focused = false;
-            }
-            (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, _) => {
+            (KeyCode::Down, _) => {
                 self.active_mut().list_mut().move_by(1);
             }
-            (KeyCode::Char('k'), KeyModifiers::NONE) | (KeyCode::Up, _) => {
+            (KeyCode::Up, _) => {
                 self.active_mut().list_mut().move_by(-1);
             }
             (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
@@ -421,7 +424,7 @@ impl Sidebar {
                     self.focused = false;
                 }
             }
-            (KeyCode::Char('l'), KeyModifiers::NONE) | (KeyCode::Right, _) => {
+            (KeyCode::Right, _) => {
                 let tab = self.active();
                 let on_dir = tab
                     .rows()
@@ -433,13 +436,13 @@ impl Sidebar {
                     self.focused = false;
                 }
             }
-            (KeyCode::Char('h'), KeyModifiers::NONE) | (KeyCode::Left, _) => {
-                self.collapse_or_parent(editor);
-            }
-            (KeyCode::Char('H'), KeyModifiers::NONE) => {
+            (KeyCode::Left, KeyModifiers::SHIFT) => {
                 self.collapse_all(editor);
             }
-            (KeyCode::Char('R'), KeyModifiers::NONE) => {
+            (KeyCode::Left, _) => {
+                self.collapse_or_parent(editor);
+            }
+            (KeyCode::F(5), _) => {
                 let (tab, diff) = self.parts();
                 let mut tab_cx = TabContext { editor, diff };
                 tab.refresh(&mut tab_cx);
@@ -447,21 +450,26 @@ impl Sidebar {
             (KeyCode::Tab, _) => {
                 self.switch_tab(self.tab.next(), editor);
             }
-            (KeyCode::Char('a'), KeyModifiers::NONE) if self.active().edits_disk() => {
+            (KeyCode::Char('n'), KeyModifiers::CONTROL) if self.active().edits_disk() => {
                 let target = self.prompt_target();
                 files::prompt_new(cx, target);
             }
-            (KeyCode::Char('r'), KeyModifiers::NONE) if self.active().edits_disk() => {
+            (KeyCode::F(2), _) if self.active().edits_disk() => {
                 let target = self.prompt_target();
                 files::prompt_rename(cx, target);
             }
-            (KeyCode::Char('d'), KeyModifiers::NONE) if self.active().edits_disk() => {
+            (KeyCode::Delete, _) if self.active().edits_disk() => {
                 let target = self.prompt_target();
                 files::prompt_delete(cx, target);
             }
             // Anything the sidebar does not use but the editor might: it goes through, so
             // Ctrl-q quits and Ctrl-s saves wherever the focus is.
             _ if is_editor_shortcut(key) => return EventResult::Ignored(None),
+            // A letter is not a command here: typing walks to the row that starts with what
+            // you typed, the way a file explorer does.
+            (KeyCode::Char(char), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                self.jump_to_typed(char);
+            }
             _ => {}
         }
         if self.active().list().cursor != before {
@@ -501,6 +509,19 @@ impl Sidebar {
                             .set_error(format!("Could not remember the sidebar's width: {err:#}"));
                     }
                 }
+            }
+            // The right button takes the row it lands on and offers what can be done to it.
+            MouseEventKind::Down(MouseButton::Right) if self.active().edits_disk() => {
+                self.focused = true;
+                let line = event.row.saturating_sub(self.area.y) as usize;
+                if line > 0 {
+                    if let Some(index) = self.active().list().row_at(line - 1) {
+                        self.active_mut().list_mut().select(index);
+                        self.cursor_moved(editor);
+                    }
+                }
+
+                return open_menu(event.row, event.column, self.prompt_target());
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 self.focused = true;
@@ -549,6 +570,40 @@ impl Sidebar {
             _ => {}
         }
         EventResult::Consumed(None)
+    }
+
+    /// Walks to the next row whose name starts with what has been typed. Letters typed one
+    /// after another build a longer name; a pause starts a new one.
+    fn jump_to_typed(&mut self, char: char) {
+        let now = Instant::now();
+        let carried = self
+            .typed
+            .1
+            .is_some_and(|at| now.duration_since(at) < TYPING);
+
+        if carried {
+            self.typed.0.push(char);
+        } else {
+            self.typed.0 = char.to_string();
+        }
+        self.typed.1 = Some(now);
+
+        let typed = self.typed.0.to_lowercase();
+        let rows = self.active().rows();
+        let from = self.active().list().cursor;
+
+        // From the row after this one, so typing the same letter walks the ones that match.
+        let found = (1..=rows.len())
+            .map(|step| (from + step) % rows.len())
+            .find(|index| {
+                rows[*index]
+                    .entry()
+                    .is_some_and(|entry| entry.name.to_lowercase().starts_with(&typed))
+            });
+
+        if let Some(index) = found {
+            self.active_mut().list_mut().select(index);
+        }
     }
 
     fn scroll_by(&mut self, editor: &mut Editor, lines: isize) {
@@ -680,6 +735,64 @@ pub(crate) fn later(
     then: impl FnOnce(&mut Sidebar, &mut Editor) + Send + 'static,
 ) {
     editor::later(delay, move |editor, view| then(&mut view.sidebar, editor));
+}
+
+/// What can be done to the row the pointer is on. Every one of them has a key as well —
+/// the menu is the other way in, never the only one.
+fn open_menu(row: u16, column: u16, target: PromptTarget) -> EventResult {
+    EventResult::Consumed(Some(Box::new(move |compositor, _cx| {
+        let for_new = target.clone();
+        let for_rename = target.clone();
+        let for_delete = target.clone();
+        let to_copy = target.path.clone();
+
+        let entries = vec![
+            context_menu::Entry::new(
+                "New file or folder",
+                "Ctrl-n",
+                Box::new(move |compositor, cx| {
+                    context_menu::with_context(compositor, cx, |cx| files::prompt_new(cx, for_new))
+                }),
+            ),
+            context_menu::Entry::new(
+                "Rename",
+                "F2",
+                Box::new(move |compositor, cx| {
+                    context_menu::with_context(compositor, cx, |cx| {
+                        files::prompt_rename(cx, for_rename)
+                    })
+                }),
+            ),
+            context_menu::Entry::new(
+                "Delete",
+                "Del",
+                Box::new(move |compositor, cx| {
+                    context_menu::with_context(compositor, cx, |cx| {
+                        files::prompt_delete(cx, for_delete)
+                    })
+                }),
+            ),
+            context_menu::Entry::new(
+                "Copy the path",
+                "",
+                Box::new(move |_compositor, cx| {
+                    let Some(path) = to_copy else {
+                        return;
+                    };
+
+                    let path = path.to_string_lossy().into_owned();
+                    if let Err(err) = cx.editor.registers.write('+', vec![path]) {
+                        cx.editor.set_error(err.to_string());
+                    }
+                }),
+            ),
+        ];
+
+        compositor.push(Box::new(context_menu::ContextMenu::new(
+            (row, column),
+            entries,
+        )));
+    })))
 }
 
 #[cfg(test)]
