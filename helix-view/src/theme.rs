@@ -679,6 +679,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn terminal_fallback_keeps_gutter_and_cursor_readable_on_light_backgrounds() {
+        let theme = Loader::new(&[]).base16_default();
+        assert!(theme.is_16_color());
+        assert_eq!(theme.get("ui.gutter").bg, Some(Color::Reset));
+        assert_eq!(theme.get("ui.linenr").bg, None);
+        assert_eq!(theme.get("ui.linenr.selected").fg, Some(Color::Reset));
+        assert_eq!(theme.get("ui.linenr.selected").bg, None);
+        assert_eq!(theme.get("ui.cursor").fg, None);
+        assert!(theme
+            .get("ui.cursor")
+            .add_modifier
+            .contains(Modifier::REVERSED));
+    }
+
+    #[test]
     fn test_parse_style_string() {
         let fg = Value::String("#ffffff".to_string());
 
