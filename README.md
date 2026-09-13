@@ -332,7 +332,7 @@ are installed separately; `coil --health` shows which are available.
 For servers, the Linux `.run` asset is a single transferable file: rename it
 `coil`, run `chmod +x coil`, and copy it to a directory on PATH. It includes the
 same runtime, extracted to a user cache on first use, with no FUSE requirement.
-Linux builds require glibc 2.35+ (Ubuntu 22.04+, Debian 12+); macOS builds require
+Linux builds require glibc 2.28+ (Ubuntu 20.04+, Debian 10+); macOS builds require
 macOS 14+. Choose the asset matching the machine's architecture.
 
 To use it as your default editor, set `EDITOR=coil` and `VISUAL=coil`. An optional

@@ -46,8 +46,8 @@ older directories under the prefix's `lib/coil` can be removed when no longer us
 
 Themes, queries and compiled syntax grammars are included. Language servers
 and formatters are separate: `coil --health` lists what your machine has.
-Git history requires the `git` command. Linux packages require glibc 2.35+
-(e.g. Ubuntu 22.04+, Debian 12+); Alpine/musl is not supported by these builds.
+Git history requires the `git` command. Linux packages require glibc 2.28+
+(e.g. Ubuntu 20.04+, Debian 10+); Alpine/musl is not supported by these builds.
 macOS builds target macOS 14 or later on Apple Silicon. Mac Intel binaries are
 not built for new releases.
 

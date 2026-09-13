@@ -9,8 +9,11 @@ trap 'rm -rf "$stage"' EXIT
 name="coil-$version-$platform"
 mkdir -p "$stage/$name/runtime" dist
 cp target/release/coil LICENSE "$stage/$name/"
-cp -R runtime/tutor runtime/queries runtime/themes runtime/grammars "$stage/$name/runtime/"
-rm -rf "$stage/$name/runtime/grammars/sources"
+cp -R runtime/tutor runtime/queries runtime/themes "$stage/$name/runtime/"
+mkdir -p "$stage/$name/runtime/grammars"
+for grammar in runtime/grammars/*; do
+    if [[ -f "$grammar" ]]; then cp "$grammar" "$stage/$name/runtime/grammars/"; fi
+done
 cp fork/release/install.sh "$stage/$name/"
 cp fork/release/README.md "$stage/$name/README.md"
 tar -czf "dist/$name.tar.gz" -C "$stage" "$name"

@@ -19,23 +19,37 @@ jobs:
         include:
           - platform: x86_64-linux
             os: ubuntu-22.04
+            container: quay.io/pypa/manylinux_2_28_x86_64
           - platform: aarch64-linux
             os: ubuntu-22.04-arm
+            container: quay.io/pypa/manylinux_2_28_aarch64
           - platform: aarch64-macos
             os: macos-14
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    defaults:
+      run:
+        shell: bash
     env:
       MACOSX_DEPLOYMENT_TARGET: '14.0'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.90.0
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.container }}
+      - name: Link grammar C++ support statically on Linux
+        if: runner.os == 'Linux'
+        run: echo 'CXXFLAGS=-static-libstdc++ -static-libgcc' >> "$GITHUB_ENV"
       - name: Build binary and all grammars
         run: cargo build --release --locked -p helix-term --bin coil
       - name: Test
         env:
           HELIX_DISABLE_AUTO_GRAMMAR_BUILD: '1'
         run: cargo test --locked -p helix-term -p helix-view --lib
+      - name: Check Linux binary and grammar compatibility
+        if: runner.os == 'Linux'
+        run: python3 fork/release/check-linux-abi.py target/release/coil runtime/grammars
       - name: Package
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -64,9 +78,38 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  linux-compatibility:
+    needs: build
+    strategy:
+      matrix:
+        include:
+          - platform: x86_64-linux
+            os: ubuntu-22.04
+          - platform: aarch64-linux
+            os: ubuntu-22.04-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: coil-${{ matrix.platform }}
+          path: dist
+      - name: Install and launch on Ubuntu 20.04 (glibc 2.31)
+        run: |
+          mkdir extracted
+          tar -xzf dist/*.tar.gz -C extracted
+          docker run --rm -v "$PWD:/work:ro" ubuntu:20.04 sh -eu -c '
+            getconf GNU_LIBC_VERSION
+            COIL_PREFIX=/tmp/installed sh /work/extracted/*/install.sh
+            /tmp/installed/bin/coil --version
+            /tmp/installed/bin/coil --health rust > /tmp/health
+            cat /tmp/health
+            grep -q "Tree-sitter parser: ✓" /tmp/health
+            sh /work/dist/*.run --version
+          '
+
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, linux-compatibility]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
