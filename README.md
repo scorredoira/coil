@@ -313,8 +313,20 @@ coil
 
 This installs the complete package under `~/.local`, verifies the archive's
 SHA-256 checksum and preserves your configuration. Repeat to update. No Rust,
-Homebrew or compiler is needed on the destination machine. Add the PATH line to
-`~/.zshrc` on macOS or your shell profile on Linux. Language servers and formatters
+Homebrew or compiler is needed on the destination machine. To keep Coil on PATH in future terminals, run this once for macOS's default
+zsh shell:
+
+```sh
+printf '\nexport PATH="$HOME/.local/bin:$PATH"\n' >> ~/.zshrc
+```
+
+For bash on Linux, use `~/.bashrc` instead:
+
+```sh
+printf '\nexport PATH="$HOME/.local/bin:$PATH"\n' >> ~/.bashrc
+```
+
+ Language servers and formatters
 are installed separately; `coil --health` shows which are available.
 
 For servers, the Linux `.run` asset is a single transferable file: rename it
