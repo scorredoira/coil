@@ -16,7 +16,7 @@ trap 'rm -rf "$work"' EXIT HUP INT TERM
 curl -fLsS "$base/SHA256SUMS" -o "$work/SHA256SUMS"
 asset=$(awk -v suffix="-$arch-$os.tar.gz" 'substr($2, length($2)-length(suffix)+1)==suffix {print $2}' "$work/SHA256SUMS")
 case "$asset" in coil-v*-"$arch"-"$os".tar.gz) ;; *) echo 'Release has no matching archive' >&2; exit 1 ;; esac
-case "$asset" in *[!a-zA-Z0-9.-]*) echo 'Invalid asset name' >&2; exit 1 ;; esac
+case "$asset" in *[!a-zA-Z0-9_.-]*) echo 'Invalid asset name' >&2; exit 1 ;; esac
 curl -fLsS "$base/$asset" -o "$work/$asset"
 (cd "$work"
     awk -v name="$asset" '$2==name' SHA256SUMS > selected.sha256
