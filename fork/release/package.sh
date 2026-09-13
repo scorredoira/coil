@@ -9,7 +9,7 @@ trap 'rm -rf "$stage"' EXIT
 name="coil-$version-$platform"
 mkdir -p "$stage/$name/runtime" dist
 cp target/release/coil LICENSE "$stage/$name/"
-cp -R runtime/queries runtime/themes runtime/grammars "$stage/$name/runtime/"
+cp -R runtime/tutor runtime/queries runtime/themes runtime/grammars "$stage/$name/runtime/"
 rm -rf "$stage/$name/runtime/grammars/sources"
 cp fork/release/install.sh "$stage/$name/"
 cp fork/release/README.md "$stage/$name/README.md"
