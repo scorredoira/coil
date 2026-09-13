@@ -3,9 +3,19 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      artifacts_run_id:
+        description: 'Optional successful build run to verify and publish without rebuilding'
+        required: false
+        type: string
+      release_tag:
+        description: 'Existing tag for the reused artifacts'
+        required: false
+        type: string
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -13,6 +23,7 @@ concurrency:
 
 jobs:
   build:
+    if: ${{ !inputs.artifacts_run_id }}
     strategy:
       fail-fast: false
       matrix:
@@ -80,7 +91,9 @@ jobs:
 
   linux-compatibility:
     needs: build
+    if: ${{ always() && (needs.build.result == 'success' || (needs.build.result == 'skipped' && inputs.artifacts_run_id != '')) }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - platform: x86_64-linux
@@ -93,6 +106,8 @@ jobs:
         with:
           name: coil-${{ matrix.platform }}
           path: dist
+          run-id: ${{ inputs.artifacts_run_id || github.run_id }}
+          github-token: ${{ github.token }}
       - name: Install and launch on Ubuntu 20.04 (glibc 2.31)
         run: |
           mkdir extracted
@@ -103,16 +118,17 @@ jobs:
             /tmp/installed/bin/coil --version
             /tmp/installed/bin/coil --health rust > /tmp/health
             cat /tmp/health
-            grep -q "Tree-sitter parser: ✓" /tmp/health
+            grep -q "Tree-sitter parser:.*✓" /tmp/health
             sh /work/dist/*.run --version
           '
 
   publish:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: ${{ always() && needs.linux-compatibility.result == 'success' && (startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != '') }}
     needs: [build, linux-compatibility]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -120,11 +136,17 @@ jobs:
           pattern: coil-*
           merge-multiple: true
           path: dist
+          run-id: ${{ inputs.artifacts_run_id || github.run_id }}
+          github-token: ${{ github.token }}
       - name: Publish complete release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+          ARTIFACTS_RUN_ID: ${{ inputs.artifacts_run_id || github.run_id }}
         run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$(gh run view "$ARTIFACTS_RUN_ID" --json headSha --jq .headSha)"
           cd dist
           sha256sum *.tar.gz *.run > SHA256SUMS
           gh release create "$RELEASE_TAG" --verify-tag --title "Coil $RELEASE_TAG" \
