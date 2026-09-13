@@ -107,6 +107,13 @@ pub fn review_code_toggle(cx: &mut Context) {
     }));
 }
 
+pub fn review_files_toggle(cx: &mut Context) {
+    cx.callback.push(Box::new(|compositor, cx| {
+        let view = compositor.find::<EditorView>().unwrap();
+        view.sidebar.toggle_commit_files(cx.editor);
+    }));
+}
+
 pub fn review_context_toggle(cx: &mut Context) {
     cx.callback.push(Box::new(|compositor, cx| {
         let view = compositor.find::<EditorView>().unwrap();

@@ -230,6 +230,10 @@ impl View {
     }
 
     pub fn gutter_offset(&self, doc: &Document) -> u16 {
+        if doc.review.is_some() {
+            // Review numbers are inline; reserve only a margin beside the divider.
+            return u16::from(self.area.width > 1);
+        }
         let total_width = self
             .gutters
             .layout
@@ -467,6 +471,17 @@ impl View {
         theme: Option<&Theme>,
     ) -> TextAnnotations<'a> {
         let mut text_annotations = TextAnnotations::default();
+        if let Some(review) = &doc.review {
+            for (numbers, scope) in
+                review
+                    .number_annotations
+                    .iter()
+                    .zip(["ui.linenr", "diff.plus", "diff.minus"])
+            {
+                text_annotations
+                    .add_inline_annotations(numbers, theme.and_then(|t| t.find_highlight(scope)));
+            }
+        }
 
         if let Some(labels) = doc.jump_labels.get(&self.id) {
             let style = theme.and_then(|t| t.find_highlight("ui.virtual.jump-label"));
@@ -732,6 +747,56 @@ mod tests {
 
     use crate::document::Document;
     use crate::editor::{Config, GutterConfig, GutterLineNumbersConfig, GutterType};
+
+    #[test]
+    fn review_headings_use_the_left_edge_and_code_keeps_its_number_columns() {
+        use crate::review::{LineKind, Review, ReviewLine};
+        let mut view = View::new(DocumentId::default(), GutterConfig::default());
+        view.area = Rect::new(10, 10, 80, 20);
+        let text = "Commit\ncafé.rs\ncode\n";
+        let mut review = Review {
+            digits: 3,
+            ..Review::default()
+        };
+        for kind in [LineKind::Header, LineKind::Header, LineKind::Added] {
+            review.lines.push(ReviewLine {
+                kind,
+                old: None,
+                new: (kind == LineKind::Added).then_some(1),
+                source: None,
+            });
+        }
+        review.prepare_line_numbers(text);
+        let mut doc = Document::from(
+            Rope::from_str(text),
+            None,
+            Arc::new(ArcSwap::from_pointee(Config::default())),
+            Arc::new(ArcSwap::from_pointee(syntax::Loader::default())),
+        );
+        doc.ensure_view_init(view.id);
+        doc.review = Some(review);
+        assert_eq!(view.gutter_offset(&doc), 1);
+        assert_eq!(view.inner_area(&doc).x, 11);
+        let annotations = view.text_annotations(&doc, None);
+        for (row, column) in [(0, 0), (1, 0), (2, 11)] {
+            let pos = doc.text().line_to_char(row);
+            assert_eq!(
+                view.screen_coords_at_pos(&doc, doc.text().slice(..), pos),
+                Some(Position::new(row, column))
+            );
+            assert_eq!(
+                view.text_pos_at_screen_coords(
+                    &doc,
+                    10 + row as u16,
+                    11 + column as u16,
+                    TextFormat::default(),
+                    &annotations,
+                    true,
+                ),
+                Some(pos)
+            );
+        }
+    }
 
     #[test]
     fn test_text_pos_at_screen_coords() {

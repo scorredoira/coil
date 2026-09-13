@@ -11,6 +11,24 @@ pub struct ParsedReview {
     pub review: Review,
 }
 
+impl ParsedReview {
+    /// Keep commit prose out of the patch parser and the historical code sources.
+    pub fn prepend_commit(&mut self, text: &str) {
+        let mut lines = Vec::new();
+        let mut introduction = Review::default();
+        push(&mut lines, &mut introduction, "Commit", LineKind::Header);
+        for line in text.split_terminator('\n') {
+            push(&mut lines, &mut introduction, line, LineKind::Context);
+        }
+        push(&mut lines, &mut introduction, "", LineKind::Separator);
+        push(&mut lines, &mut introduction, "Diffs", LineKind::Header);
+        self.text.insert_str(0, &(lines.join("\n") + "\n"));
+        introduction.lines.append(&mut self.review.lines);
+        self.review.lines = introduction.lines;
+        self.review.prepare_line_numbers(&self.text);
+    }
+}
+
 struct File {
     header: usize,
     old: String,
@@ -226,6 +244,7 @@ pub fn parse(patch: &str) -> Answer<ParsedReview> {
         .unwrap_or(1);
     review.digits = largest.to_string().len().max(3);
     let text = lines.join("\n") + "\n";
+    review.prepare_line_numbers(&text);
     Ok(ParsedReview { text, review })
 }
 
@@ -412,7 +431,21 @@ mod tests {
         fs::write(root.join("café file.rs"), "fn first() {}\n").unwrap();
         fs::write(root.join("binary"), [0, 1, 2]).unwrap();
         git(&["add", "."]);
-        git(&["commit", "-m", "root"]);
+        git(&[
+            "commit",
+            "-m",
+            "root",
+            "-m",
+            "Full body: café\n\ndiff --git is prose here.",
+        ]);
+        git(&["tag", "v1"]);
+        let info = super::super::git::commit_text(root, "HEAD").unwrap();
+        assert!(info.contains("Autor: Review test <review@example.invalid>"));
+        assert!(info.contains("Committer: Review test <review@example.invalid>"));
+        assert!(!info.contains("Padre:"));
+        assert!(info.contains("Rama: main\nSigue-a: v1\nPrecede-a: v1\n"));
+        assert!(info.contains("root\n\nFull body: café\n\ndiff --git is prose here.\n"));
+        assert!(info.ends_with("Archivos: 2 · Líneas añadidas: +1 · Líneas eliminadas: −0\n"));
         let patch = super::super::git::show(root, "HEAD", &[".".into()], false).unwrap();
         let parsed = parse(&patch).unwrap();
         assert!(parsed
@@ -433,6 +466,35 @@ mod tests {
         assert_eq!(parsed.text, "café file.rs\nfn first() {}\nfn second() {}\n");
         assert_eq!(parsed.review.lines[1].kind, LineKind::Removed);
         assert_eq!(parsed.review.lines[2].kind, LineKind::Added);
+        let info = super::super::git::commit_text(root, "HEAD").unwrap();
+        assert_eq!(
+            info.lines()
+                .filter(|line| line.starts_with("Padre:"))
+                .count(),
+            2
+        );
+        assert!(info.contains(" (main)\n"));
+        assert!(info.contains(" (topic)\n"));
+        assert!(info.contains("Sigue-a: v1\nPrecede-a: \n"));
+        assert!(info.ends_with("Archivos: 1 · Líneas añadidas: +1 · Líneas eliminadas: −1\n"));
+        let anchor = parsed.review.anchor(1).unwrap();
+        let mut parsed = parsed;
+        parsed.prepend_commit(&info);
+        assert!(parsed.text.starts_with("Commit\nAutor:"));
+        assert!(parsed.text.contains("\nmerge\n"));
+        assert!(parsed.text.contains("\nDiffs\ncafé file.rs\n"));
+        let row = parsed.review.find_anchor(&anchor).unwrap();
+        assert_eq!(parsed.text.lines().nth(row), Some("fn first() {}"));
+        assert!(parsed.review.lines[..row]
+            .iter()
+            .all(|line| line.source.is_none()));
+        git(&["mv", "other", "renamed\tfile\n.txt"]);
+        git(&["commit", "-m", "rename"]);
+        let info = super::super::git::commit_text(root, "HEAD").unwrap();
+        assert!(info.ends_with("Archivos: 1 · Líneas añadidas: +0 · Líneas eliminadas: −0\n"));
+        git(&["commit", "--allow-empty", "-m", "empty"]);
+        let info = super::super::git::commit_text(root, "HEAD").unwrap();
+        assert!(info.ends_with("Archivos: 0 · Líneas añadidas: +0 · Líneas eliminadas: −0\n"));
     }
 
     #[test]

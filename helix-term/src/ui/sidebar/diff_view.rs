@@ -61,6 +61,7 @@ impl DiffView {
             move || {
                 let patch = git::show(&root, &target.hash, &target.pathspecs, full_context)?;
                 let mut parsed = review::parse(&patch)?;
+                parsed.prepend_commit(&git::commit_text(&root, &target.hash)?);
                 parsed.review.prepare_syntax(&loader);
                 Ok(parsed)
             },

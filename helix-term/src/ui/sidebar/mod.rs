@@ -248,6 +248,21 @@ impl Sidebar {
         }
     }
 
+    pub fn files_visible(&self) -> bool {
+        self.commits.files_visible()
+    }
+
+    pub fn toggle_commit_files(&mut self, editor: &mut Editor) {
+        if !self.showing(TabKind::Commits) {
+            self.toggle_commits(editor);
+        }
+        let mut cx = TabContext {
+            editor,
+            diff: &mut self.diff,
+        };
+        self.commits.toggle_files(&mut cx);
+    }
+
     pub fn toggle_code(&mut self, editor: &mut Editor) {
         let hide = !self.code_hidden();
         if hide && !self.showing(TabKind::Commits) {

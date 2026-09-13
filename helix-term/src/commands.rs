@@ -424,6 +424,7 @@ impl MappableCommand {
         toggle_hidden_files, "Show or hide hidden files in the file tree",
         review_commits_toggle, "Show or hide the commits panel",
         review_code_toggle, "Show or hide the code panel while reviewing commits",
+        review_files_toggle, "Show or hide the commit files panel",
         review_context_toggle, "Toggle full file context in the current commit diff",
         keyboard_shortcuts, "Show a searchable reference of keyboard shortcuts",
         sidebar_reveal, "Reveal the current file in the sidebar's tree, focused",

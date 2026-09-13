@@ -4,6 +4,7 @@ use std::ops::Range;
 use std::path::PathBuf;
 
 use helix_core::syntax::{Highlight, HighlightEvent, Loader, OverlayHighlights, Syntax};
+use helix_core::text_annotations::InlineAnnotation;
 use helix_core::Rope;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,6 +37,8 @@ pub struct Review {
     pub lines: Vec<ReviewLine>,
     pub sources: Vec<ReviewSource>,
     pub digits: usize,
+    /// Inline number columns belong only to code, leaving prose and headings flush left.
+    pub number_annotations: [Vec<InlineAnnotation>; 3],
 }
 
 /// A code location survives switching between changed excerpts and complete files.
@@ -48,6 +51,30 @@ pub struct ReviewAnchor {
 }
 
 impl Review {
+    pub fn prepare_line_numbers(&mut self, text: &str) {
+        self.number_annotations.iter_mut().for_each(Vec::clear);
+        let mut char_idx = 0;
+        for (text, line) in text.split_inclusive('\n').zip(&self.lines) {
+            if line.old.is_some() || line.new.is_some() {
+                let old = line.old.map(|n| n.to_string()).unwrap_or_default();
+                let new = line.new.map(|n| n.to_string()).unwrap_or_default();
+                let (layer, marker) = match line.kind {
+                    LineKind::Added => (1, "+"),
+                    LineKind::Removed => (2, "−"),
+                    _ => (0, " "),
+                };
+                self.number_annotations[layer].push(InlineAnnotation::new(
+                    char_idx,
+                    format!(
+                        "{old:>width$} {new:>width$} {marker}  ",
+                        width = self.digits
+                    ),
+                ));
+            }
+            char_idx += text.chars().count();
+        }
+    }
+
     pub fn anchor(&self, row: usize) -> Option<ReviewAnchor> {
         let line = self.lines.get(row)?;
         let line = if line.source.is_some() {

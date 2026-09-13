@@ -195,6 +195,112 @@ pub fn commit_files(root: &Path, hash: &str) -> Answer<(String, Vec<ChangedFile>
     Ok((prefix, files))
 }
 
+/// Full commit information, independent of the paths selected for its patch.
+pub fn commit_text(root: &Path, hash: &str) -> Answer<String> {
+    let output = run(
+        root,
+        &[
+            "show",
+            "--no-patch",
+            "--no-color",
+            "--format=%an <%ae>  %ai%x00%cn <%ce>  %ci%x00%P%x00%B",
+            hash,
+            "--",
+        ],
+    )?;
+    let output = String::from_utf8_lossy(&output);
+    let fields: Vec<_> = output.splitn(4, '\0').collect();
+    let [author, committer, parents, message] = fields.as_slice() else {
+        return Err("git show: incomplete commit information".into());
+    };
+    let mut text = format!("Autor: {author}\nCommitter: {committer}\n");
+    for parent in parents.split_whitespace() {
+        let subject = run(root, &["show", "--no-patch", "--format=%s", parent, "--"])?;
+        text.push_str(&format!(
+            "Padre: {parent} ({})\n",
+            String::from_utf8_lossy(&subject).trim_end()
+        ));
+    }
+    let branches = run(
+        root,
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)",
+            "--contains",
+            hash,
+            "refs/heads/",
+            "refs/remotes/",
+        ],
+    )?;
+    let branches = String::from_utf8_lossy(&branches);
+    text.push_str(&format!(
+        "Rama: {}\n",
+        branches.lines().collect::<Vec<_>>().join(", ")
+    ));
+    // A repository need not have tags on either side of this commit.
+    let preceding = run(root, &["describe", "--tags", "--abbrev=0", hash]).unwrap_or_default();
+    let following = run(root, &["describe", "--contains", "--tags", hash]).unwrap_or_default();
+    let following = String::from_utf8_lossy(&following);
+    let following = following.trim_end().split(['~', '^']).next().unwrap_or("");
+    text.push_str(&format!(
+        "Sigue-a: {}\nPrecede-a: {following}\n\n",
+        String::from_utf8_lossy(&preceding).trim_end()
+    ));
+    for line in message.split_terminator('\n') {
+        text.push_str(line);
+        text.push('\n');
+    }
+    let (files, added, removed) = commit_stats(root, hash)?;
+    text.push_str(&format!(
+        "\nArchivos: {files} · Líneas añadidas: +{added} · Líneas eliminadas: −{removed}\n"
+    ));
+    Ok(text)
+}
+
+/// Count the entire commit, using the same first-parent comparison as its patch.
+/// Without `-z`, Git quotes tabs/newlines in paths and emits one row per file,
+/// including renames. Binary files count as files but have no textual line counts.
+fn commit_stats(root: &Path, hash: &str) -> Answer<(usize, usize, usize)> {
+    let stats = run(
+        root,
+        &[
+            "show",
+            "--format=",
+            "--numstat",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-relative",
+            "-M",
+            "--diff-merges=first-parent",
+            hash,
+            "--",
+        ],
+    )?;
+    let (mut files, mut added, mut removed) = (0, 0, 0);
+    for row in String::from_utf8_lossy(&stats).lines() {
+        let mut fields = row.splitn(3, '\t');
+        let (Some(insertions), Some(deletions), Some(_path)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            return Err("git show: invalid numstat row".into());
+        };
+        let count = |value: &str| -> Answer<usize> {
+            if value == "-" {
+                Ok(0)
+            } else {
+                value
+                    .parse()
+                    .map_err(|_| "git show: invalid numstat count".into())
+            }
+        };
+        files += 1;
+        added += count(insertions)?;
+        removed += count(deletions)?;
+    }
+    Ok((files, added, removed))
+}
+
 /// A canonical unified patch, independent of the user's prefix/context settings,
 /// narrowed to `pathspecs`. Review presentation is built separately from this transport.
 pub fn show(root: &Path, hash: &str, pathspecs: &[String], full_context: bool) -> Answer<String> {

@@ -4,7 +4,7 @@ use helix_view::graphics::Rect;
 use crate::ui::panel_width;
 
 const STATE_FILE: &str = "sidebar-commits";
-const DEFAULT_MAX_WIDTH: u16 = 80;
+const DEFAULT_MAX_WIDTH: u16 = 110;
 const MIN_PANE_ROWS: u16 = 3;
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -85,7 +85,8 @@ mod tests {
         let layout = CommitLayout::default();
         assert_eq!(layout.width(120), 60);
         assert_eq!(layout.width(160), 80);
-        assert_eq!(layout.width(300), 80);
+        assert_eq!(layout.width(220), 110);
+        assert_eq!(layout.width(300), 110);
     }
 
     #[test]

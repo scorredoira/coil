@@ -321,7 +321,7 @@ impl EditorView {
         }
 
         let gutter_overflow = view.gutter_offset(doc) == 0;
-        if !gutter_overflow {
+        if !gutter_overflow && doc.review.is_none() {
             Self::render_gutter(
                 editor,
                 doc,
@@ -2370,6 +2370,7 @@ fn review_menu_entries(
     let commits = view.sidebar.showing(sidebar::TabKind::Commits);
     let hidden = view.sidebar.code_hidden();
     let full = view.sidebar.full_context();
+    let files = view.sidebar.files_visible();
     let mut entries = vec![
         context_menu::Entry::new(
             if commits {
@@ -2394,6 +2395,17 @@ fn review_menu_entries(
             }),
         ),
     ];
+    entries.push(context_menu::Entry::new(
+        if files {
+            "Hide commit files panel"
+        } else {
+            "Show commit files panel"
+        },
+        "F9",
+        Box::new(|compositor, cx| {
+            run_command(compositor, cx, MappableCommand::review_files_toggle)
+        }),
+    ));
     if doc!(cx.editor).review.is_some() {
         entries.push(context_menu::Entry::new(
             if full {

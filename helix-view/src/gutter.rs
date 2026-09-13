@@ -148,31 +148,6 @@ pub fn line_numbers<'doc>(
     theme: &Theme,
     is_focused: bool,
 ) -> GutterFn<'doc> {
-    if let Some(review) = &doc.review {
-        let dim = theme.get("ui.linenr");
-        let added = theme.get("diff.plus");
-        let removed = theme.get("diff.minus");
-        return Box::new(move |line, _, first, out| {
-            let row = review.lines.get(line)?;
-            if !first || (row.old.is_none() && row.new.is_none()) {
-                return None;
-            }
-            let old = row.old.map(|n| n.to_string()).unwrap_or_default();
-            let new = row.new.map(|n| n.to_string()).unwrap_or_default();
-            let (marker, style) = match row.kind {
-                crate::review::LineKind::Added => ("+", added),
-                crate::review::LineKind::Removed => ("−", removed),
-                _ => (" ", dim),
-            };
-            write!(
-                out,
-                "{old:>width$} {new:>width$} {marker}",
-                width = review.digits
-            )
-            .unwrap();
-            Some(style)
-        });
-    }
     let text = doc.text().slice(..);
     let width = line_numbers_width(view, doc);
 
@@ -235,9 +210,6 @@ pub fn line_numbers<'doc>(
 /// whether there is content on the last line (the `~` line), and the
 /// `editor.gutters.line-numbers.min-width` settings.
 fn line_numbers_width(view: &View, doc: &Document) -> usize {
-    if let Some(review) = &doc.review {
-        return review.digits * 2 + 3;
-    }
     let text = doc.text();
     let last_line = text.len_lines().saturating_sub(1);
     let draw_last = text.line_to_byte(last_line) < text.len_bytes();

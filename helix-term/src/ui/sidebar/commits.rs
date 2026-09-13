@@ -25,7 +25,7 @@ const AUTHOR_MAX_WIDTH: usize = 20;
 
 /// The columns the subject must still have for a list to show each commit's hash, date and
 /// author before it; a narrower list shows the subject and its age alone.
-const WIDE_SUBJECT_WIDTH: usize = 40;
+const WIDE_SUBJECT_WIDTH: usize = 20;
 
 pub struct CommitsTab {
     root: PathBuf,
@@ -34,6 +34,7 @@ pub struct CommitsTab {
     history_rows: Vec<Row>,
     history_list: List,
     files_focused: bool,
+    files_visible: bool,
     showing: Showing,
     /// Counts the times `showing` changed, so a page asked for the previous history is
     /// dropped when it lands.
@@ -94,6 +95,7 @@ impl CommitsTab {
             history_rows: Vec::new(),
             history_list: List::default(),
             files_focused: false,
+            files_visible: false,
             showing: Showing::Repository,
             epoch: 0,
             log: None,
@@ -109,7 +111,31 @@ impl CommitsTab {
     }
 
     pub fn has_files(&self) -> bool {
-        self.opened.is_some()
+        self.files_visible && self.opened.is_some()
+    }
+
+    pub fn files_visible(&self) -> bool {
+        self.files_visible
+    }
+
+    pub fn toggle_files(&mut self, cx: &mut TabContext) {
+        self.files_visible = !self.files_visible;
+        self.files_focused = false;
+        self.follow = true;
+        if self.files_visible {
+            let commit = self
+                .log
+                .as_ref()
+                .and_then(|log| log.as_ref().ok())
+                .and_then(|commits| commits.get(self.history_list.cursor))
+                .cloned();
+            if let Some(commit) = commit {
+                self.open_commit(commit);
+            } else {
+                self.focus_files(true);
+            }
+        }
+        self.preview(cx);
     }
 
     pub fn focus_files(&mut self, files: bool) {
@@ -316,7 +342,8 @@ impl CommitsTab {
             list_cursor,
             list_scroll,
         });
-        self.files_focused = true;
+        self.files_focused = self.files_visible;
+        self.follow = true;
         self.list.home();
         self.rebuild(cx.editor);
         if let Some(target) = target {
@@ -637,22 +664,35 @@ pub fn draw_commit(surface: &mut Surface, paint: &RowPaint, row: &CommitRow, the
         dim_style = dim_style.patch(selected);
         subject_style = subject_style.patch(selected);
     }
+    let column_style = |scope: &str, fallback: &str| {
+        let mut style = theme.try_get(scope).unwrap_or_else(|| theme.get(fallback));
+        if row.head {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        if let Some(selected) = paint.selected {
+            style = style.patch(selected);
+        }
+        style
+    };
+    let hash_style = column_style("ui.commit.hash", "type");
+    let date_style = column_style("ui.commit.date", "constant.numeric");
+    let author_style = column_style("ui.commit.author", "diff.plus");
     let x = paint.line.x + 1;
     let y = paint.line.y;
     let width = (paint.line.width as usize).saturating_sub(2);
     let paint_subject = |_: usize| -> Style { subject_style };
     let wide_prefix = row.short.width() + 1 + row.date.width() + 1 + row.author_width + 1;
     if width >= wide_prefix + WIDE_SUBJECT_WIDTH {
-        let (after_hash, _) = surface.set_stringn(x, y, &row.short, width, dim_style);
+        let (after_hash, _) = surface.set_stringn(x, y, &row.short, width, hash_style);
         let (after_date, _) =
-            surface.set_stringn(after_hash + 1, y, &row.date, row.date.width(), dim_style);
+            surface.set_stringn(after_hash + 1, y, &row.date, row.date.width(), date_style);
         let author_x = after_date + 1;
         surface.set_string_truncated(
             author_x,
             y,
             &row.author,
             row.author_width,
-            |_| dim_style,
+            |_| author_style,
             true,
             false,
         );
@@ -671,7 +711,7 @@ pub fn draw_commit(surface: &mut Surface, paint: &RowPaint, row: &CommitRow, the
     let age = format_age(row.time);
     let mut subject_x = x;
     if row.head {
-        let (after_hash, _) = surface.set_stringn(x, y, &row.short, width, dim_style);
+        let (after_hash, _) = surface.set_stringn(x, y, &row.short, width, hash_style);
         subject_x = after_hash + 1;
     }
     let used = (subject_x - x) as usize;
@@ -746,6 +786,11 @@ mod tests {
             list_scroll: 0,
         });
         tab.set_pages(1, 3);
+        assert!(!tab.files_visible());
+        assert!(!tab.has_files());
+        tab.focus_files(true);
+        assert!(!tab.files_focused);
+        tab.files_visible = true;
         assert_eq!(tab.history_list.page, 1);
         assert_eq!(tab.list.page, 3);
         tab.focus_files(true);
