@@ -173,6 +173,13 @@ start helix-term/src/ui/picker.rs
 keys Space H
 shoot history 2
 
+# The tree narrowed to the files whose path has "pick" in it, wherever they are.
+start helix-term/src/ui/editor.rs
+keys Space T
+keys C-f
+typed pick
+shoot filter 2
+
 # A working tree with something to show: a file changed, one added, one gone.
 echo "// a line nobody has committed" >>"$demo/helix-term/src/ui/sidebar/list.rs"
 echo "notes" >"$demo/NOTES.md"

@@ -24,17 +24,40 @@ the focus.
 
 `Ctrl-b` shows or hides it and `Ctrl-Shift-e` focuses it; started on a file
 (`coil foo.ts`), the editor opens without it. It follows the file you are
-editing, and inside it the arrows move, `Enter` opens, and **typing walks to the
-file whose name you are typing**, the way an explorer does. `Ctrl-n` creates,
-`F2` renames, `Delete` deletes, and the right button offers the same four on the
-row it lands on. A click opens a row, the wheel scrolls, and dragging the line
-between the tree and the editor resizes it: the width is remembered.
+editing, and `Ctrl-Shift-r` takes you to that file in the tree from wherever
+you are. Inside it the arrows move, `Enter`
+opens, and **typing walks to the file whose name you are typing**, the way an
+explorer does; `Ctrl-f` opens a filter on the top row instead, and the tree
+narrows to every file in the project whose path contains what you type, folded
+away or not, shown under the folders on the way to it — `Esc` brings the whole
+tree back, folded as it was. `Ctrl-n` creates (a name with
+folders in it, `a/b/c.ts`, makes them; a name that would leave the project is
+refused), `F2` renames, `Delete` deletes, and the right button offers the same
+four on the row it lands on. A click opens a row, the wheel scrolls, and
+dragging the line between the tree and the editor resizes it: the width is
+remembered.
+
+![The tree narrowed by the filter to the files with "pick" in their path](fork/screenshots/filter.png)
+
+The tree reads the disk off to the side, never while drawing, and it notices
+what happens there: a file a tool or git creates appears on its own within a
+couple of seconds, with your folds and your place kept. `F5` reads everything
+on screen again at once.
 
 ## What git sees changed
 
 The **Changes** tab (`Tab` inside the sidebar) lists what `git status` names,
-each file with its letter: modified, added, deleted, renamed. `Enter` opens
-it, and the gutter marks the lines that changed.
+each file with its letter: modified, added, deleted, renamed. The letter sits in
+git's own column — the left one when the change is staged, the right one when
+it is not, both when it is some of each. `Enter` opens the file, and the gutter
+marks the lines that changed.
+
+`s` stages the file under the cursor, `u` takes it out of the index, and `d`
+(or `Delete`) throws its working changes away after asking — an untracked file
+is deleted, since git has nothing to get it back from. A file that is open is
+read again from disk afterwards. The right button offers the same on the row it
+lands on. The list is asked of git every couple of seconds while the tab is on
+screen, and it stays where you scrolled it.
 
 ![The Changes tab: a file modified, one deleted, one added](fork/screenshots/changes.png)
 
@@ -81,10 +104,12 @@ border: the matches listed by line, the file beside them, the same switches.
 
 `Ctrl-Shift-b` draws the Markdown file you are editing beside it: headings,
 lists and tasks, quotes and GitHub's alerts, tables lined up, code
-highlighted, all reflowed to the panel. It redraws as you type and keeps to
-the part of the file on screen; the wheel over it scrolls it on its own until
-the file moves, and dragging the line between the file and the panel resizes
-it: the width is remembered.
+highlighted, all reflowed to the panel. It redraws once you pause typing and
+keeps to the part of the file on screen; the wheel over it scrolls it on its
+own until the file moves, and dragging the line between the file and the panel
+resizes it: the width is remembered. A click on a link follows it: a file opens
+in the editor, a `#heading` goes to that heading, and a web address opens in
+the browser.
 
 ![A README and its preview side by side](fork/screenshots/preview.png)
 
@@ -108,11 +133,25 @@ symbol, or split vertically or horizontally. With more than one pane open,
 
 ![Right-click a document to split it or close its pane](fork/screenshots/split-menu.png)
 
-Opening the editor on a project with no file named reopens the files it had open, the one
-you were on in front; naming a file opens that file alone, and the settings
-screen turns it off altogether. Splits resize by dragging the line between two
+When the tabs do not all fit, the strip scrolls to keep the one you are on in
+view, with `‹` and `›` at the edges where tabs are hidden: a click on one shifts
+the strip by a tab, and the wheel over the tabs goes to the previous or the next
+file.
+
+In the text, a double click selects the word and a triple click the line, and
+dragging from there grows the selection by words or by lines; what you type next
+replaces it. `Ctrl`-click (`Cmd`-click where the terminal passes it on) goes to
+the definition of what you clicked. Letting the pointer rest on a word shows what
+the language server knows about it, and on a problem shows the problem first;
+moving away closes it.
+
+Opening the editor on a project — `coil`, or `coil .` — reopens what it had
+open: the tabs in their order, the splits as they were, each with its cursor
+where it was, and the one you were on in front. Naming a file opens that file
+alone, and the settings screen turns it off altogether. Splits resize by dragging the line between two
 side by side, or the status line between two stacked. In the pickers a click
-previews a row and a double click opens it.
+previews a row and a double click opens it; the wheel over the list walks it,
+and over the preview scrolls the preview.
 
 ![Two files side by side, each a tab you can click](fork/screenshots/splits.png)
 
@@ -151,7 +190,7 @@ So the keys are the ones you already know:
 | `Ctrl-Shift-f` | Search and replace across the project |
 | `Ctrl-g` | Go to a line |
 | `Ctrl-Shift-o` / `Ctrl-t` | Go to a symbol in the file / in the project |
-| `Ctrl-b` / `Ctrl-Shift-e` | The sidebar: show or hide / focus |
+| `Ctrl-b` / `Ctrl-Shift-e` / `Ctrl-Shift-r` | The sidebar: show or hide / focus / reveal this file |
 | `Ctrl-PageUp` / `Ctrl-PageDown` | The tab before / after this one |
 | `Ctrl-\` | Split the editor |
 | `F12` / `Shift-F12` | Go to the definition / to the references |
@@ -171,7 +210,8 @@ own menus.
 Where a keyboard puts `/`, `\` or `]` behind another key — a Spanish layout does
 — the editor sees the key that was actually pressed, so `Ctrl-/` is bound to the
 `7` key and `Ctrl-\` to `º`. Everything is in `defaults.toml`, laid under your
-own `config.toml`.
+own `config.toml` — and a key meant for every mode is written once, under
+`[keys.all]`, in that file and in yours alike; a mode's own table wins over it.
 
 While typing, a selection behaves as it does in any other editor: `Shift` with
 an arrow, `Home` or `End` grows it from the cursor, the mouse drags one, typing

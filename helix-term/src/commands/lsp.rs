@@ -5,7 +5,7 @@ use helix_lsp::{
         self, CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionTriggerKind,
         DiagnosticSeverity, NumberOrString,
     },
-    util::{diagnostic_to_lsp_diagnostic, lsp_range_to_range, range_to_lsp_range},
+    util::{diagnostic_to_lsp_diagnostic, lsp_range_to_range, pos_to_lsp_pos, range_to_lsp_range},
     Client, LanguageServerId, OffsetEncoding,
 };
 use tokio_stream::StreamExt;
@@ -38,6 +38,7 @@ use std::{
     fmt::Display,
     future::Future,
     path::Path,
+    pin::Pin,
 };
 
 /// Gets the first language server that is attached to a document which supports a specific feature.
@@ -1095,8 +1096,6 @@ pub fn signature_help(cx: &mut Context) {
 }
 
 pub fn hover(cx: &mut Context) {
-    use ui::lsp::hover::Hover;
-
     let (view, doc) = current!(cx.editor);
     if doc
         .language_servers_with_feature(LanguageServerFeature::Hover)
@@ -1108,26 +1107,45 @@ pub fn hover(cx: &mut Context) {
         return;
     }
 
-    let mut seen_language_servers = HashSet::new();
-    let mut futures: FuturesUnordered<_> = doc
-        .language_servers_with_feature(LanguageServerFeature::Hover)
-        .filter(|ls| seen_language_servers.insert(ls.id()))
-        .map(|language_server| {
-            let server_name = language_server.name().to_string();
-            // TODO: factor out a doc.position_identifier() that returns lsp::TextDocumentPositionIdentifier
-            let pos = doc.position(view.id, language_server.offset_encoding());
-            let request = language_server
-                .text_document_hover(doc.identifier(), pos, None)
-                .unwrap();
-
-            async move { anyhow::Ok((server_name, request.await?)) }
-        })
-        .collect();
+    let pos = doc
+        .selection(view.id)
+        .primary()
+        .cursor(doc.text().slice(..));
+    let request = request_hover(doc, pos);
 
     cx.jobs.callback(async move {
+        let hovers = request.answer().await;
+        let call = move |editor: &mut Editor, compositor: &mut Compositor| {
+            if hovers.is_empty() {
+                editor.set_status("No hover results available.");
+                return;
+            }
+
+            show_hover(editor, compositor, hovers, None);
+        };
+        Ok(Callback::EditorCompositor(Box::new(call)))
+    });
+}
+
+type HoverFuture =
+    Pin<Box<dyn Future<Output = anyhow::Result<(String, Option<lsp::Hover>)>> + Send>>;
+
+/// What the language servers were asked about one position of a document. The mouse asks
+/// it for the position under the pointer, the hover key for the one under the caret.
+pub struct HoverRequest {
+    servers: FuturesUnordered<HoverFuture>,
+}
+
+impl HoverRequest {
+    /// No server could answer, so there is nothing to wait for.
+    pub fn is_empty(&self) -> bool {
+        self.servers.is_empty()
+    }
+
+    pub async fn answer(mut self) -> Vec<(String, lsp::Hover)> {
         let mut hovers: Vec<(String, lsp::Hover)> = Vec::new();
 
-        while let Some(response) = futures.next().await {
+        while let Some(response) = self.servers.next().await {
             match response {
                 Ok((server_name, Some(hover))) => hovers.push((server_name, hover)),
                 Ok(_) => (),
@@ -1135,19 +1153,46 @@ pub fn hover(cx: &mut Context) {
             }
         }
 
-        let call = move |editor: &mut Editor, compositor: &mut Compositor| {
-            if hovers.is_empty() {
-                editor.set_status("No hover results available.");
-                return;
-            }
+        hovers
+    }
+}
 
-            // create new popup
-            let contents = Hover::new(hovers, editor.syn_loader.clone());
-            let popup = Popup::new(Hover::ID, contents).auto_close(true);
-            compositor.replace_or_push(Hover::ID, popup);
-        };
-        Ok(Callback::EditorCompositor(Box::new(call)))
-    });
+pub fn request_hover(doc: &Document, pos: usize) -> HoverRequest {
+    let mut seen_language_servers = HashSet::new();
+    let servers = doc
+        .language_servers_with_feature(LanguageServerFeature::Hover)
+        .filter(|ls| seen_language_servers.insert(ls.id()))
+        .map(|language_server| {
+            let server_name = language_server.name().to_string();
+            let lsp_pos = pos_to_lsp_pos(doc.text(), pos, language_server.offset_encoding());
+            let request = language_server
+                .text_document_hover(doc.identifier(), lsp_pos, None)
+                .unwrap();
+
+            let future: HoverFuture =
+                Box::pin(async move { anyhow::Ok((server_name, request.await?)) });
+            future
+        })
+        .collect();
+
+    HoverRequest { servers }
+}
+
+/// Opens the hover popup, beside the caret or pinned at a screen position.
+pub fn show_hover(
+    editor: &mut Editor,
+    compositor: &mut Compositor,
+    hovers: Vec<(String, lsp::Hover)>,
+    at: Option<helix_core::Position>,
+) {
+    use ui::lsp::hover::Hover;
+
+    let contents = Hover::new(hovers, editor.syn_loader.clone());
+    let mut popup = Popup::new(Hover::ID, contents).auto_close(true);
+    if let Some(at) = at {
+        popup = popup.pinned(at);
+    }
+    compositor.replace_or_push(Hover::ID, popup);
 }
 
 pub fn rename_symbol(cx: &mut Context) {

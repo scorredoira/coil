@@ -172,6 +172,11 @@ pub struct View {
     // left to future work. For now we treat all views as focused and give them
     // each their own handler.
     pub diagnostics_handler: DiagnosticsHandler,
+    /// Whether what is selected was selected WHILE typing: then typing over it replaces
+    /// it, as any editor does. The selection insert mode was entered with is not that.
+    /// It is the view's, never the editor's: a flag left on by one document would reach
+    /// the next one shown and eat a selection nobody made by typing.
+    pub insert_selection: bool,
 }
 
 impl fmt::Debug for View {
@@ -197,6 +202,7 @@ impl View {
             gutters,
             doc_revisions: HashMap::new(),
             diagnostics_handler: DiagnosticsHandler::new(),
+            insert_selection: false,
         }
     }
 

@@ -407,23 +407,37 @@ async fn test_write_scratch_to_new_path_force_creates_file() -> anyhow::Result<(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_write_scratch_no_path_fails() -> anyhow::Result<()> {
-    helpers::test_key_sequence_with_input_text(
-        None,
-        ("#[\n|]#", "ihello<esc>:w<ret>", "hello#[\n|]#"),
-        &|app| {
-            assert!(app.editor.is_err());
-
-            let mut docs: Vec<_> = app.editor.documents().collect();
-            assert_eq!(1, docs.len());
-
-            let doc = docs.pop().unwrap();
-            assert_eq!(None, doc.path());
-        },
+async fn test_write_scratch_no_path_asks_where_to_save() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("notes.txt");
+    let answer = format!("{}<ret>", path.display());
+    let mut app = helpers::AppBuilder::new().build()?;
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                Some("ihello<esc>:w<ret>"),
+                Some(&|app| {
+                    assert!(!app.editor.is_err());
+                    assert!(helix_view::doc!(app.editor).path().is_none());
+                    assert!(!path.exists());
+                }),
+            ),
+            (
+                Some(&answer),
+                Some(&|app| {
+                    assert!(!app.editor.is_err());
+                    assert_eq!(helix_view::doc!(app.editor).path(), Some(path.as_path()));
+                }),
+            ),
+        ],
         false,
     )
     .await?;
-
+    assert_eq!(
+        std::fs::read_to_string(path)?,
+        LineFeedHandling::Native.apply("hello")
+    );
     Ok(())
 }
 

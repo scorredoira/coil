@@ -2,7 +2,7 @@
 //! the files it touched, the diff of what the cursor is on shown in the editor.
 
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use helix_view::graphics::{Modifier, Style};
 use helix_view::{Editor, Theme};
@@ -14,6 +14,10 @@ use super::git::{self, ChangedFile, Commit, LOG_PAGE};
 use super::list::List;
 use super::tab::{Activation, Message, Outcome, TabContext, TabView};
 use super::{TabKind, REFRESH};
+
+/// How long the cursor rests on a commit before its diff is asked for: a wheel or a held
+/// arrow passes over many, and only the one it stops on is wanted.
+const PREVIEW_DELAY: Duration = Duration::from_millis(150);
 
 pub struct CommitsTab {
     root: PathBuf,
@@ -34,6 +38,10 @@ pub struct CommitsTab {
     asking: Option<usize>,
     /// Whether the next read of the top page is already on its way.
     armed: bool,
+    /// Whether F5 came while a page was being read, to read the top again when it lands.
+    again: bool,
+    /// Counts the cursor's moves, so the preview waited for is the last move's alone.
+    moves: u32,
     opened: Option<OpenCommit>,
     /// The hash whose files are being asked for.
     opening: Option<String>,
@@ -84,6 +92,8 @@ impl CommitsTab {
             complete: false,
             asking: None,
             armed: false,
+            again: false,
+            moves: 0,
             opened: None,
             opening: None,
             follow: false,
@@ -186,6 +196,10 @@ impl CommitsTab {
         self.asking = None;
         if self.take_page(page) {
             self.rebuild(editor);
+        }
+        if self.again {
+            self.again = false;
+            self.ask_page(0);
         }
         // For as long as the tab is on screen, the top page is read again after the last
         // answer, so a commit or a rebase made elsewhere shows up. A file's history is read
@@ -331,6 +345,23 @@ impl CommitsTab {
         if let Some(target) = self.diff_target() {
             cx.diff.ask(target);
         }
+    }
+
+    /// Shows the diff of what the cursor is on once it has rested there: a burst of moves
+    /// asks git for the last one only.
+    fn preview_when_rested(&mut self) {
+        self.moves = self.moves.wrapping_add(1);
+        let move_number = self.moves;
+        super::later(PREVIEW_DELAY, move |sidebar, editor| {
+            if sidebar.commits.moves != move_number {
+                return;
+            }
+            let mut cx = TabContext {
+                editor,
+                diff: &mut sidebar.diff,
+            };
+            sidebar.commits.preview(&mut cx);
+        });
     }
 
     /// The diff for the row under the cursor: a commit's whole patch in the history (that
@@ -495,17 +526,23 @@ impl TabView for CommitsTab {
         }
     }
 
+    /// F5 reads the top of the history again; one that comes while a page is being read
+    /// is kept for when it lands, never dropped.
     fn refresh(&mut self, _cx: &mut TabContext) {
+        if self.asking.is_some() {
+            self.again = true;
+            return;
+        }
         self.ask_page(0);
     }
 
-    fn cursor_moved(&mut self, cx: &mut TabContext) {
+    fn cursor_moved(&mut self, _cx: &mut TabContext) {
         // Moving through the history is choosing a commit to look at, as a click is.
         if !self.files_focused {
             self.follow = true;
             self.ask_next_page_if_near_end();
         }
-        self.preview(cx);
+        self.preview_when_rested();
     }
 
     fn step_back(&mut self, cx: &mut TabContext) -> bool {

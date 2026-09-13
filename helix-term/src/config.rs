@@ -126,7 +126,8 @@ impl Config {
         };
         let global_config = over_defaults(&user_config)?;
         let local_config = fs::read_to_string(helix_loader::workspace_config_file())
-            .map_err(ConfigLoadError::Error);
+            .map_err(ConfigLoadError::Error)
+            .and_then(|text| spread_all_modes_text(&text));
 
         let phony_config = ConfigLoadError::Error(IOError::other("hacky placeholder"));
         let global_parsed = Config::load(Ok(&global_config), Err(phony_config))?;
@@ -161,10 +162,36 @@ const DEFAULTS: &str = include_str!("defaults.toml");
 
 /// The user's config.toml laid over Coil's defaults, as the text `Config::load` reads.
 fn over_defaults(user: &str) -> Result<String, ConfigLoadError> {
-    let defaults: toml::Value = toml::from_str(DEFAULTS).expect("defaults.toml is valid TOML");
-    let user: toml::Value = toml::from_str(user).map_err(ConfigLoadError::BadConfig)?;
+    let mut defaults: toml::Value = toml::from_str(DEFAULTS).expect("defaults.toml is valid TOML");
+    spread_all_modes(&mut defaults);
+    let mut user: toml::Value = toml::from_str(user).map_err(ConfigLoadError::BadConfig)?;
+    spread_all_modes(&mut user);
     let merged = merge_toml_values(defaults, user, usize::MAX);
     Ok(toml::to_string(&merged).expect("a TOML value serializes"))
+}
+
+/// `[keys.all]` is laid under normal, select and insert, each mode's own table winning
+/// over it: a key meant for every mode is written once.
+fn spread_all_modes(config: &mut toml::Value) {
+    let Some(keys) = config.get_mut("keys").and_then(toml::Value::as_table_mut) else {
+        return;
+    };
+    let Some(all) = keys.remove("all") else {
+        return;
+    };
+    for mode in ["normal", "select", "insert"] {
+        let own = keys
+            .remove(mode)
+            .unwrap_or_else(|| toml::Value::Table(toml::Table::new()));
+        let merged = merge_toml_values(all.clone(), own, usize::MAX);
+        keys.insert(mode.to_owned(), merged);
+    }
+}
+
+fn spread_all_modes_text(text: &str) -> Result<String, ConfigLoadError> {
+    let mut config: toml::Value = toml::from_str(text).map_err(ConfigLoadError::BadConfig)?;
+    spread_all_modes(&mut config);
+    Ok(toml::to_string(&config).expect("a TOML value serializes"))
 }
 
 #[cfg(test)]
@@ -261,6 +288,7 @@ mod tests {
             assert_eq!(command_at(&config, mode, &["C-P"]), "command_palette");
             assert_eq!(command_at(&config, mode, &["C-F"]), "global_search");
             assert_eq!(command_at(&config, mode, &["C-b"]), "sidebar_toggle");
+            assert_eq!(command_at(&config, mode, &["C-R"]), "sidebar_reveal");
         }
 
         // Escape stays in insert: it closes what is open, it does not change the mode.
@@ -323,6 +351,30 @@ mod tests {
             );
             assert_eq!(command_at(&config, mode, &["C-M"]), "markdown_preview_full");
         }
+    }
+
+    #[test]
+    fn keys_all_reach_every_mode_and_a_modes_own_wins() {
+        let user = r#"
+[keys.all]
+C-j = "move_line_down"
+C-h = "move_char_left"
+
+[keys.insert]
+C-h = "no_op"
+"#;
+        let config = Config::load_test(&over_defaults(user).unwrap());
+
+        for mode in [Mode::Normal, Mode::Select, Mode::Insert] {
+            assert_eq!(command_at(&config, mode, &["C-j"]), "move_line_down");
+        }
+        assert_eq!(
+            command_at(&config, Mode::Normal, &["C-h"]),
+            "move_char_left"
+        );
+        assert_eq!(command_at(&config, Mode::Insert, &["C-h"]), "no_op");
+        // What the defaults put under [keys.all] is still there beneath the user's.
+        assert_eq!(command_at(&config, Mode::Insert, &["C-s"]), "write");
     }
 
     #[test]

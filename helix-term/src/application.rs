@@ -157,10 +157,18 @@ impl Application {
         } else if !args.files.is_empty() {
             let mut files_it = args.files.into_iter().peekable();
 
-            // If the first file is a directory, skip it and open a picker
+            // A directory first names the project: on its own it opens what the project had
+            // open, and the file picker only when there was nothing to reopen.
+            let mut restored = false;
             if let Some((first, _)) = files_it.next_if(|(p, _)| p.is_dir()) {
-                let picker = ui::file_picker(&editor, first);
-                compositor.push(Box::new(overlaid(picker)));
+                let only_the_directory = files_it.peek().is_none();
+                restored = only_the_directory
+                    && config.load().editor.restore_session
+                    && Self::restore_session(&mut editor);
+                if !restored {
+                    let picker = ui::file_picker(&editor, first);
+                    compositor.push(Box::new(overlaid(picker)));
+                }
             }
 
             // If there are any more files specified, open them
@@ -229,7 +237,7 @@ impl Application {
                     let (view, doc) = current!(editor);
                     align_view(doc, view, Align::Center);
                 }
-            } else {
+            } else if !restored {
                 editor.new_file(Action::VerticalSplit);
             }
         } else if stdin().is_terminal() || cfg!(feature = "integration") {
@@ -278,6 +286,10 @@ impl Application {
     }
 
     async fn render(&mut self) {
+        // A job or a dialog answer can close the final view before requesting a frame.
+        if self.editor.should_close() {
+            return;
+        }
         if self.compositor.full_redraw {
             self.terminal.clear().expect("Cannot clear the terminal");
             self.compositor.full_redraw = false;
@@ -331,10 +343,6 @@ impl Application {
             if self.editor.should_close() {
                 return false;
             }
-
-            // What is open is written down as it changes, not on the way out: by then the
-            // documents are closed and there is nothing left to ask.
-            self.remember_session();
 
             use futures_util::StreamExt;
 
@@ -731,6 +739,9 @@ impl Application {
             }
             EditorEvent::IdleTimer => {
                 self.editor.clear_idle_timer();
+                // What is open is written down once the hands rest, not on the way out: by
+                // then the documents are closed and there is nothing left to ask.
+                self.remember_session();
                 self.handle_idle_timeout().await;
 
                 #[cfg(feature = "integration")]
@@ -1426,6 +1437,8 @@ impl Application {
 
     /// Opens what the project had open, and says whether anything was there to open.
     fn restore_session(editor: &mut Editor) -> bool {
+        use helix_view::editor::Action;
+
         let workspace = helix_loader::find_workspace().0;
         let session = match crate::session::load(&workspace) {
             Ok(session) => session,
@@ -1443,8 +1456,8 @@ impl Application {
         for file in &session.files {
             // The first one makes the view every other one loads into.
             let action = match opened {
-                0 => helix_view::editor::Action::VerticalSplit,
-                _ => helix_view::editor::Action::Load,
+                0 => Action::VerticalSplit,
+                _ => Action::Load,
             };
 
             match editor.open(file, action) {
@@ -1458,17 +1471,65 @@ impl Application {
             return false;
         }
 
+        if let Some(layout) = &session.layout {
+            Self::restore_pane(editor, layout, None);
+        }
+
         if let Some(focused) = &session.focused {
-            if let Some(doc_id) = editor.document_id_by_path(focused) {
-                editor.switch(doc_id, helix_view::editor::Action::Replace);
+            let showing = editor
+                .tree
+                .views()
+                .find(|(view, _)| editor.documents[&view.doc].path() == Some(focused))
+                .map(|(view, _)| view.id);
+            if let Some(view_id) = showing {
+                editor.focus(view_id);
+            } else if let Some(doc_id) = editor.document_id_by_path(focused) {
+                editor.switch(doc_id, Action::Replace);
             }
         }
 
         true
     }
 
-    /// Writes down what is open, for the next time the editor opens on this project. It
-    /// does nothing while nothing has changed, which is almost always.
+    /// Puts a pane on screen: a view into the focused one (split off it when `split` says
+    /// so), a container as its first pane and then the rest split from it its way.
+    fn restore_pane(editor: &mut Editor, pane: &crate::session::Pane, split: Option<Layout>) {
+        use crate::session::{Pane, Split};
+        use helix_view::editor::Action;
+
+        match pane {
+            Pane::Split { split: own, panes } => {
+                let layout = match own {
+                    Split::Vertical => Layout::Vertical,
+                    Split::Horizontal => Layout::Horizontal,
+                };
+                for (index, pane) in panes.iter().enumerate() {
+                    let how = if index == 0 { split } else { Some(layout) };
+                    Self::restore_pane(editor, pane, how);
+                }
+            }
+            Pane::View { file, line, column } => {
+                let action = match split {
+                    None => Action::Replace,
+                    Some(Layout::Vertical) => Action::VerticalSplit,
+                    Some(Layout::Horizontal) => Action::HorizontalSplit,
+                };
+                if let Err(err) = editor.open(file, action) {
+                    log::info!("Not showing {}: {err}", file.display());
+                    return;
+                }
+
+                let (view, doc) = current!(editor);
+                let text = doc.text().slice(..);
+                let line = (*line).min(text.len_lines().saturating_sub(1));
+                let end = helix_core::line_ending::line_end_char_index(&text, line);
+                let pos = (text.line_to_char(line) + column).min(end);
+                doc.set_selection(view.id, Selection::point(pos));
+                align_view(doc, view, Align::Center);
+            }
+        }
+    }
+
     fn remember_session(&mut self) {
         if !self.config.load().editor.restore_session {
             return;
@@ -1480,16 +1541,57 @@ impl Application {
             .filter_map(|doc| doc.path().map(Path::to_path_buf))
             .collect();
         let focused = doc!(self.editor).path().map(Path::to_path_buf);
+        let panes = self.editor.tree.panes();
+        let layout = self.session_pane(&panes);
+        let session = crate::session::Session {
+            files,
+            focused,
+            layout,
+        };
 
-        if files == self.session.files && focused == self.session.focused {
+        if session == self.session {
             return;
         }
 
-        self.session = crate::session::Session { files, focused };
+        self.session = session;
 
         let workspace = helix_loader::find_workspace().0;
         if let Err(err) = crate::session::save(&workspace, &self.session) {
             log::error!("Could not remember what this project had open: {err:#}");
+        }
+    }
+
+    /// The pane as the session writes it: a view with no file is left out, a split left
+    /// with one pane is that pane, and one left with none is nothing.
+    fn session_pane(&self, pane: &helix_view::tree::Pane) -> Option<crate::session::Pane> {
+        use crate::session::{Pane, Split};
+
+        match pane {
+            helix_view::tree::Pane::View(view_id) => {
+                let view = self.editor.tree.get(*view_id);
+                let doc = &self.editor.documents[&view.doc];
+                let file = doc.path()?.to_path_buf();
+                let text = doc.text().slice(..);
+                let cursor = doc.selection(view.id).primary().cursor(text);
+                let line = text.char_to_line(cursor);
+                let column = cursor - text.line_to_char(line);
+                Some(Pane::View { file, line, column })
+            }
+            helix_view::tree::Pane::Split(layout, panes) => {
+                let split = match layout {
+                    Layout::Vertical => Split::Vertical,
+                    Layout::Horizontal => Split::Horizontal,
+                };
+                let mut panes: Vec<_> = panes
+                    .iter()
+                    .filter_map(|pane| self.session_pane(pane))
+                    .collect();
+                match panes.len() {
+                    0 => None,
+                    1 => panes.pop(),
+                    _ => Some(Pane::Split { split, panes }),
+                }
+            }
         }
     }
 }

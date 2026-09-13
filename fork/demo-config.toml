@@ -1,3 +1,8 @@
 # The configuration the screenshots are taken with, laid over Coil's defaults:
 # one fixed theme, so the pictures do not follow the terminal's background.
 theme = "github_dark"
+
+# The capture script navigates with normal-mode commands between screenshots.
+[editor]
+default-mode = "normal"
+restore-session = false

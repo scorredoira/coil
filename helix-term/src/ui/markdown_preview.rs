@@ -1,12 +1,17 @@
+use std::{borrow::Cow, sync::Arc, time::Duration};
+
 use helix_core::{
     syntax,
     unicode::width::{UnicodeWidthChar, UnicodeWidthStr},
+    Rope, Selection,
 };
+use helix_stdx::Url;
 use helix_view::{
-    current_ref, doc,
+    align_view, current, current_ref, doc,
+    editor::Action,
     graphics::{Modifier, Rect, Style, UnderlineStyle},
     input::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind},
-    Document, DocumentId, Editor, Theme,
+    Align, Document, DocumentId, Editor, Theme,
 };
 use pulldown_cmark::{
     Alignment, BlockQuoteKind, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd,
@@ -19,7 +24,7 @@ use tui::{
 use crate::{
     commands,
     compositor::EventResult,
-    ui::{markdown::highlighted_code_block, panel_width, sidebar::EDITOR_ROOM},
+    ui::{editor, markdown::highlighted_code_block, panel_width, sidebar::EDITOR_ROOM},
 };
 
 /// Under this many columns a preview is not worth drawing, and the file being edited
@@ -32,6 +37,10 @@ const READING_WIDTH: u16 = 90;
 
 /// Where the width the separator was dragged to is remembered.
 const WIDTH_FILE: &str = "preview";
+
+/// How long the file must stay unchanged before the preview is laid out again: a
+/// keystroke is not worth reparsing the whole file for, a pause is.
+const REST: Duration = Duration::from_millis(200);
 
 /// The focused Markdown file drawn beside it as it reads: headings, lists, quotes,
 /// tables and highlighted code, reflowed to the panel's width. It follows the file's
@@ -47,8 +56,11 @@ pub struct MarkdownPreview {
     width: Option<u16>,
     /// Whether the separator is being dragged, so the mouse is the preview's wherever it goes.
     resizing: bool,
+    /// Where the text was drawn last, so a click can be turned back into a row.
+    content: Rect,
     rendered: Option<Rendered>,
     scrolled: Option<Scrolled>,
+    rest: Option<Rest>,
 }
 
 /// The rows last drawn, and what they were drawn from.
@@ -67,6 +79,14 @@ struct Scrolled {
     offset: usize,
 }
 
+/// An edit the preview is waiting out: the rows on screen are older than the file, and a
+/// timer says when the file has been still for long enough to lay it out again.
+struct Rest {
+    doc: DocumentId,
+    version: i32,
+    settled: bool,
+}
+
 /// One row of the panel.
 #[derive(Debug)]
 pub struct Row {
@@ -74,6 +94,16 @@ pub struct Row {
     /// The line of the file this row starts on, 0-indexed.
     line: usize,
     blank: bool,
+    /// The links on the row, by the columns they cover.
+    links: Vec<Link>,
+}
+
+/// A link as drawn: the columns of its row it covers, and where it goes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Link {
+    from: usize,
+    to: usize,
+    target: Arc<str>,
 }
 
 impl MarkdownPreview {
@@ -196,6 +226,9 @@ impl MarkdownPreview {
         EventResult::Consumed(None)
     }
 
+    /// The mouse over the preview. The terminal reports every motion of the pointer, and
+    /// consuming one repaints the screen, so only an event that changed something is
+    /// taken: the rest are ignored and cost nothing.
     pub fn handle_mouse(&mut self, event: &MouseEvent, cx: &mut commands::Context) -> EventResult {
         let lines = cx.editor.config().scroll_lines;
 
@@ -225,12 +258,82 @@ impl MarkdownPreview {
                         .set_error(format!("Could not remember the preview's width: {err:#}"));
                 }
             }
+            MouseEventKind::Down(MouseButton::Left) => {
+                let Some(target) = self.link_at(cx.editor, event.row, event.column) else {
+                    return EventResult::Ignored(None);
+                };
+
+                self.follow(&target, cx);
+            }
             MouseEventKind::ScrollDown => self.scroll_by(cx.editor, lines),
             MouseEventKind::ScrollUp => self.scroll_by(cx.editor, -lines),
-            _ => {}
+            _ => return EventResult::Ignored(None),
         }
 
         EventResult::Consumed(None)
+    }
+
+    /// Where the link drawn under the pointer goes, if one is.
+    fn link_at(&self, editor: &Editor, row: u16, column: u16) -> Option<Arc<str>> {
+        let rendered = self.rendered.as_ref()?;
+        let content = self.content;
+        if row < content.y || row >= content.bottom() || column < content.x {
+            return None;
+        }
+
+        let (view, doc) = current_ref!(editor);
+        let offset = self.offset(doc.id(), top_line(doc, view.id));
+        let drawn = rendered.rows.get(offset + (row - content.y) as usize)?;
+        let at = (column - content.x) as usize;
+        drawn
+            .links
+            .iter()
+            .find(|link| link.from <= at && at < link.to)
+            .map(|link| link.target.clone())
+    }
+
+    /// Follows a link: anything with a scheme goes to the system's opener, a path opens
+    /// in the editor beside its file, and an anchor goes to the heading it names.
+    fn follow(&mut self, target: &str, cx: &mut commands::Context) {
+        if let Ok(url) = Url::parse(target) {
+            cx.jobs.callback(crate::open_external_url_callback(url));
+            return;
+        }
+
+        let (path, anchor) = match target.split_once('#') {
+            Some((path, anchor)) => (path, Some(anchor)),
+            None => (target, None),
+        };
+
+        if !path.is_empty() {
+            let doc = doc!(cx.editor);
+            let beside = doc
+                .path()
+                .and_then(|file| file.parent())
+                .map_or_else(helix_stdx::env::current_working_dir, |dir| {
+                    dir.to_path_buf()
+                });
+            let path = beside.join(path);
+            if let Err(err) = cx.editor.open(&path, Action::Replace) {
+                log::error!("Could not open {}: {err:#}", path.display());
+                cx.editor
+                    .set_error(format!("Could not open {}: {err:#}", path.display()));
+                return;
+            }
+        }
+
+        let Some(anchor) = anchor else {
+            return;
+        };
+
+        let (view, doc) = current!(cx.editor);
+        let Some(line) = heading_line(doc.text(), anchor) else {
+            return;
+        };
+
+        let at = doc.text().line_to_char(line);
+        doc.set_selection(view.id, Selection::point(at));
+        align_view(doc, view, Align::Center);
     }
 
     fn scroll_by(&mut self, editor: &Editor, delta: isize) {
@@ -298,20 +401,13 @@ impl MarkdownPreview {
 
     fn draw(&mut self, area: Rect, content: Rect, surface: &mut Surface, editor: &Editor) {
         self.area = area;
+        self.content = content;
 
         let theme = &editor.theme;
         let (view, doc) = current_ref!(editor);
-        let stale = match &self.rendered {
-            Some(rendered) => {
-                rendered.doc != doc.id()
-                    || rendered.version != doc.version()
-                    || rendered.width != content.width
-                    || rendered.theme != theme.name()
-            }
-            None => true,
-        };
-        if stale {
-            let text = doc.text().to_string();
+        if self.wants_layout(doc, content.width, theme) {
+            self.rest = None;
+            let text: Cow<str> = doc.text().slice(..).into();
             let rows = render_markdown(&text, content.width, theme, &editor.syn_loader.load());
             self.rendered = Some(Rendered {
                 doc: doc.id(),
@@ -328,6 +424,75 @@ impl MarkdownPreview {
             surface.set_spans(content.x, y, &row.spans, content.width);
         }
     }
+
+    /// Whether the rows are laid out again on this draw. Another file, another width or
+    /// another theme: at once. An edit of the same file: only once it has rested, the
+    /// old rows staying on screen meanwhile, since every keystroke would otherwise
+    /// reparse the whole file.
+    fn wants_layout(&mut self, doc: &Document, width: u16, theme: &Theme) -> bool {
+        let Some(rendered) = &self.rendered else {
+            return true;
+        };
+        if rendered.doc != doc.id() || rendered.width != width || rendered.theme != theme.name() {
+            return true;
+        }
+        if rendered.version == doc.version() {
+            return false;
+        }
+
+        match &self.rest {
+            Some(rest) if rest.doc == doc.id() && rest.version == doc.version() => rest.settled,
+            _ => {
+                let (id, version) = (doc.id(), doc.version());
+                self.rest = Some(Rest {
+                    doc: id,
+                    version,
+                    settled: false,
+                });
+                editor::later(REST, move |_, view| {
+                    view.markdown_preview.rested(id, version);
+                });
+
+                false
+            }
+        }
+    }
+
+    /// The timer's word that the file stayed at `version` for long enough. A later edit
+    /// armed a timer of its own, so an older one changes nothing.
+    fn rested(&mut self, doc: DocumentId, version: i32) {
+        if let Some(rest) = &mut self.rest {
+            if rest.doc == doc && rest.version == version {
+                rest.settled = true;
+            }
+        }
+    }
+}
+
+/// The line of the heading a `#anchor` names, slugged the way GitHub does it.
+fn heading_line(text: &Rope, anchor: &str) -> Option<usize> {
+    let wanted = slug(anchor);
+    text.lines().position(|line| {
+        let line: Cow<str> = line.into();
+        let heading = line.trim_start().strip_prefix('#');
+        heading.is_some_and(|rest| slug(rest.trim_start_matches('#')) == wanted)
+    })
+}
+
+/// A heading's anchor: lowercase, a hyphen per space, the punctuation gone.
+fn slug(heading: &str) -> String {
+    heading
+        .trim()
+        .chars()
+        .filter(|ch| ch.is_alphanumeric() || *ch == ' ' || *ch == '-' || *ch == '_')
+        .map(|ch| {
+            if ch == ' ' {
+                '-'
+            } else {
+                ch.to_ascii_lowercase()
+            }
+        })
+        .collect()
 }
 
 fn is_markdown(doc: &Document) -> bool {
@@ -421,6 +586,8 @@ struct Piece {
     text: String,
     style: Style,
     line: usize,
+    /// Where the text goes when it is a link.
+    link: Option<Arc<str>>,
 }
 
 /// What wraps the text being drawn, outermost first. Each gives every row a prefix.
@@ -452,6 +619,8 @@ struct Renderer<'a> {
     pieces: Vec<Piece>,
     /// The inline styles open around the text, innermost last.
     inline: Vec<Style>,
+    /// The link the text being read is inside, if any.
+    link: Option<Arc<str>>,
     /// The line the block being drawn starts on.
     block_line: usize,
     /// A code block being collected: its language and text.
@@ -483,6 +652,7 @@ pub fn render_markdown(text: &str, width: u16, theme: &Theme, loader: &syntax::L
         containers: Vec::new(),
         pieces: Vec::new(),
         inline: Vec::new(),
+        link: None,
         block_line: 0,
         code: None,
         html: None,
@@ -520,6 +690,7 @@ impl Renderer<'_> {
             text: text.to_string(),
             style,
             line,
+            link: self.link.clone(),
         });
     }
 
@@ -679,7 +850,10 @@ impl Renderer<'_> {
                 let style = Style::default().add_modifier(Modifier::CROSSED_OUT);
                 self.inline.push(style);
             }
-            Tag::Link { .. } => self.inline.push(self.styles.link),
+            Tag::Link { dest_url, .. } => {
+                self.link = Some(Arc::from(dest_url.as_ref()));
+                self.inline.push(self.styles.link);
+            }
             Tag::Image { .. } => {
                 let style = self.styles.dim;
                 self.push_text("[image: ", style, offset);
@@ -804,9 +978,14 @@ impl Renderer<'_> {
                     text: "]".to_string(),
                     style: self.styles.dim,
                     line,
+                    link: self.link.clone(),
                 });
             }
-            TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Link => {
+            TagEnd::Link => {
+                self.inline.pop();
+                self.link = None;
+            }
+            TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => {
                 self.inline.pop();
             }
             TagEnd::Superscript
@@ -872,12 +1051,28 @@ impl Renderer<'_> {
     }
 
     fn push_row_at(&mut self, spans: Vec<Span<'static>>, line: usize) {
+        self.push_row_linked(spans, Vec::new(), line);
+    }
+
+    /// A row with links on it, their columns counted from the text's start: the prefix
+    /// drawn in front moves them along.
+    fn push_row_linked(&mut self, spans: Vec<Span<'static>>, links: Vec<Link>, line: usize) {
         let mut row = self.prefix();
+        let shift: usize = row.iter().map(Span::width).sum();
         row.extend(spans);
+        let links = links
+            .into_iter()
+            .map(|link| Link {
+                from: link.from + shift,
+                to: link.to + shift,
+                target: link.target,
+            })
+            .collect();
         self.rows.push(Row {
             spans: Spans(row),
             line,
             blank: false,
+            links,
         });
     }
 
@@ -904,6 +1099,7 @@ impl Renderer<'_> {
             spans: Spans(spans),
             line,
             blank: true,
+            links: Vec::new(),
         });
     }
 
@@ -915,8 +1111,8 @@ impl Renderer<'_> {
 
         let pieces = std::mem::take(&mut self.pieces);
         let room = self.room();
-        for (spans, line) in wrap(&pieces, room, self.styles.text) {
-            self.push_row_at(spans, line);
+        for wrapped in wrap(&pieces, room, self.styles.text) {
+            self.push_row_linked(wrapped.spans, wrapped.links, wrapped.line);
         }
     }
 
@@ -1067,9 +1263,23 @@ fn fit_cell(
     spans
 }
 
-/// A word to wrap: its styled parts, its width and where in the file it starts.
+/// A run of one style inside a word or a row, and the link it is part of.
+#[derive(Clone)]
+struct Run {
+    text: String,
+    style: Style,
+    link: Option<Arc<str>>,
+}
+
+impl Run {
+    fn same_as(&self, style: Style, link: &Option<Arc<str>>) -> bool {
+        self.style == style && self.link == *link
+    }
+}
+
+/// A word to wrap: its styled runs, its width and where in the file it starts.
 struct Word {
-    parts: Vec<(String, Style)>,
+    runs: Vec<Run>,
     width: usize,
     line: usize,
     space_before: bool,
@@ -1089,15 +1299,19 @@ fn words(pieces: &[Piece]) -> Vec<Word> {
             }
 
             let word = current.get_or_insert_with(|| Word {
-                parts: Vec::new(),
+                runs: Vec::new(),
                 width: 0,
                 line: piece.line,
                 space_before: space,
             });
             space = false;
-            match word.parts.last_mut() {
-                Some((text, style)) if *style == piece.style => text.push(ch),
-                _ => word.parts.push((ch.to_string(), piece.style)),
+            match word.runs.last_mut() {
+                Some(run) if run.same_as(piece.style, &piece.link) => run.text.push(ch),
+                _ => word.runs.push(Run {
+                    text: ch.to_string(),
+                    style: piece.style,
+                    link: piece.link.clone(),
+                }),
             }
             word.width += ch.width().unwrap_or(0);
         }
@@ -1107,53 +1321,90 @@ fn words(pieces: &[Piece]) -> Vec<Word> {
     words
 }
 
+/// A row of wrapped text: its spans, the line of the file its first word is on, and the
+/// links on it by the columns they cover.
+struct Wrapped {
+    spans: Vec<Span<'static>>,
+    line: usize,
+    links: Vec<Link>,
+}
+
+/// Turns the runs of a row into its spans and its links, the links by column.
+fn finish_row(runs: Vec<Run>, line: usize) -> Wrapped {
+    let mut spans = Vec::new();
+    let mut links: Vec<Link> = Vec::new();
+    let mut column = 0;
+    for run in runs {
+        let width = run.text.width();
+        if let Some(target) = run.link {
+            match links.last_mut() {
+                Some(last) if last.to == column && last.target == target => last.to += width,
+                _ => links.push(Link {
+                    from: column,
+                    to: column + width,
+                    target,
+                }),
+            }
+        }
+        column += width;
+        spans.push(Span::styled(run.text, run.style));
+    }
+
+    Wrapped { spans, line, links }
+}
+
 /// Breaks the pieces into rows no wider than `room`, between words where it can and
-/// through a word only when the word alone is wider than a row. Each row comes with
-/// the line of the file its first word is on.
-fn wrap(pieces: &[Piece], room: usize, text_style: Style) -> Vec<(Vec<Span<'static>>, usize)> {
+/// through a word only when the word alone is wider than a row.
+fn wrap(pieces: &[Piece], room: usize, text_style: Style) -> Vec<Wrapped> {
     let mut rows = Vec::new();
-    let mut row: Vec<(String, Style)> = Vec::new();
+    let mut row: Vec<Run> = Vec::new();
     let mut width = 0;
     let mut line = 0;
-
-    let finish = |row: &mut Vec<(String, Style)>, rows: &mut Vec<_>, line: usize| {
-        let spans = std::mem::take(row)
-            .into_iter()
-            .map(|(text, style)| Span::styled(text, style))
-            .collect();
-        rows.push((spans, line));
-    };
 
     for word in words(pieces) {
         let spaced = word.space_before && !row.is_empty();
         if !row.is_empty() && width + usize::from(spaced) + word.width > room {
-            finish(&mut row, &mut rows, line);
+            rows.push(finish_row(std::mem::take(&mut row), line));
             width = 0;
         }
 
         if row.is_empty() {
             line = word.line;
         } else if spaced {
-            // A space between two runs of one style wears it, so a link stays underlined.
-            let style = match (row.last(), word.parts.first()) {
-                (Some((_, before)), Some((_, after))) if before == after => *before,
+            // A space between two runs of one style wears it, so a link stays underlined;
+            // and between two runs of one link it is the link's, so the link stays one.
+            let (before, after) = (row.last(), word.runs.first());
+            let style = match (before, after) {
+                (Some(before), Some(after)) if before.style == after.style => before.style,
                 _ => text_style,
             };
-            row.push((" ".to_string(), style));
+            let link = match (before, after) {
+                (Some(before), Some(after)) if before.link == after.link => before.link.clone(),
+                _ => None,
+            };
+            row.push(Run {
+                text: " ".to_string(),
+                style,
+                link,
+            });
             width += 1;
         }
 
-        for (text, style) in word.parts {
-            for ch in text.chars() {
+        for run in word.runs {
+            for ch in run.text.chars() {
                 let ch_width = ch.width().unwrap_or(0);
                 if !row.is_empty() && width + ch_width > room {
-                    finish(&mut row, &mut rows, line);
+                    rows.push(finish_row(std::mem::take(&mut row), line));
                     width = 0;
                     line = word.line;
                 }
                 match row.last_mut() {
-                    Some((text, last)) if *last == style => text.push(ch),
-                    _ => row.push((ch.to_string(), style)),
+                    Some(last) if last.same_as(run.style, &run.link) => last.text.push(ch),
+                    _ => row.push(Run {
+                        text: ch.to_string(),
+                        style: run.style,
+                        link: run.link.clone(),
+                    }),
                 }
                 width += ch_width;
             }
@@ -1161,7 +1412,7 @@ fn wrap(pieces: &[Piece], room: usize, text_style: Style) -> Vec<(Vec<Span<'stat
     }
 
     if !row.is_empty() {
-        finish(&mut row, &mut rows, line);
+        rows.push(finish_row(row, line));
     }
 
     rows
@@ -1406,6 +1657,61 @@ mod tests {
         assert_eq!(at(3), "continues");
         assert_eq!(at(5), "second");
         assert_eq!(at(99), "second");
+    }
+
+    fn links(text: &str, width: u16) -> Vec<Vec<(usize, usize, String)>> {
+        rows(text, width)
+            .iter()
+            .map(|row| {
+                row.links
+                    .iter()
+                    .map(|link| (link.from, link.to, link.target.to_string()))
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_link_knows_the_columns_it_covers() {
+        let text = "see [the docs](docs/x.md) now\n";
+
+        assert_eq!(draw(text, 40), ["see the docs now"]);
+        assert_eq!(links(text, 40), [vec![(4, 12, "docs/x.md".to_string())]]);
+    }
+
+    #[test]
+    fn a_link_wrapped_over_rows_is_on_each_of_them() {
+        let text = "[a long link text](x) tail\n";
+
+        assert_eq!(draw(text, 8), ["a long", "link", "text", "tail"]);
+        assert_eq!(
+            links(text, 8),
+            [
+                vec![(0, 6, "x".to_string())],
+                vec![(0, 4, "x".to_string())],
+                vec![(0, 4, "x".to_string())],
+                vec![],
+            ],
+        );
+    }
+
+    #[test]
+    fn a_link_moves_past_the_prefix_and_bold_inside_it_is_still_one_link() {
+        let text = "- [a **b** c](t)\n";
+
+        assert_eq!(draw(text, 20), ["• a b c"]);
+        assert_eq!(links(text, 20), [vec![(2, 7, "t".to_string())]]);
+    }
+
+    #[test]
+    fn an_anchor_finds_its_heading_the_way_github_names_it() {
+        let text =
+            Rope::from("# Coil\n\ntext\n\n## Tabs, splits and the mouse\n\n### C++ & Rust\n");
+
+        assert_eq!(heading_line(&text, "tabs-splits-and-the-mouse"), Some(4));
+        assert_eq!(heading_line(&text, "coil"), Some(0));
+        assert_eq!(heading_line(&text, "c--rust"), Some(6));
+        assert_eq!(heading_line(&text, "missing"), None);
     }
 
     #[test]

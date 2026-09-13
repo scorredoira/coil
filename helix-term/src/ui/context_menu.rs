@@ -214,13 +214,15 @@ impl ContextMenu {
         });
 
         match event.kind {
-            MouseEventKind::Moved => {
-                if let Some(index) = hit {
+            // The pointer moving is only news when it lands on another entry: the
+            // terminal reports every motion, and taking one repaints the screen.
+            MouseEventKind::Moved => match hit {
+                Some(index) if index != self.focused => {
                     self.focused = index;
+                    EventResult::Consumed(None)
                 }
-
-                EventResult::Consumed(None)
-            }
+                _ => EventResult::Ignored(None),
+            },
             MouseEventKind::Down(MouseButton::Left | MouseButton::Right) => match hit {
                 Some(index) => self.take(index),
                 // Pressing outside a menu is how a menu is dismissed everywhere.

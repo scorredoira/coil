@@ -1,14 +1,22 @@
 //! The Files tab: the workspace as it is on disk, following the file being edited, with
 //! the prompts that create, rename and delete.
+//!
+//! The disk is never read while drawing. Each directory's listing is read off the main
+//! thread and kept; the rows are laid out from what is kept, and a directory that is
+//! open but not read yet is asked for, its row waiting childless until the answer lands.
+//! While the tab is on screen the open directories are looked at every few seconds, and
+//! the ones whose modification time moved are read again.
 
-use std::path::{Path, PathBuf};
+use std::collections::HashSet;
+use std::path::{Component, Path, PathBuf};
 
 use helix_view::editor::Action;
 use helix_view::Editor;
 
-use super::entries::{self, Folds, Row};
+use super::entries::{self, Folds, Listed, Listings, Row};
 use super::list::List;
 use super::tab::{Activation, Outcome, TabContext, TabView};
+use super::{TabKind, REFRESH};
 use crate::commands;
 use crate::compositor;
 use crate::job;
@@ -21,6 +29,29 @@ pub struct FilesTab {
     folds: Folds,
     rows: Vec<Row>,
     list: List,
+    listings: Listings,
+    /// The directories being read right now.
+    asking: HashSet<PathBuf>,
+    /// The path to move onto once the directories down to it have landed.
+    pending: Option<Pending>,
+    /// Whether the next look at the disk is already on its way.
+    armed: bool,
+    /// Whether a look at the disk is running.
+    polling: bool,
+    /// What the rows are narrowed to while the filter box is open.
+    filter: Option<String>,
+    /// The whole workspace, read once when the box opened, for the filter to look
+    /// through; until it lands the filter looks through the rows listed so far.
+    walk: Option<entries::Walk>,
+    /// The folds as they were when the box opened, put back when it closes.
+    folds_before: Option<Folds>,
+}
+
+struct Pending {
+    path: PathBuf,
+    /// Whether the row goes mid-screen, as a file just switched to does; one just made or
+    /// renamed stays where the tree already is.
+    center: bool,
 }
 
 impl FilesTab {
@@ -30,15 +61,203 @@ impl FilesTab {
             folds: Folds::closed(),
             rows: Vec::new(),
             list: List::default(),
+            listings: Listings::new(),
+            asking: HashSet::new(),
+            pending: None,
+            armed: false,
+            polling: false,
+            filter: None,
+            walk: None,
+            folds_before: None,
         }
     }
 
-    /// Something on disk changed under `path`: the rows are laid out again down to it,
-    /// with the cursor on it; a path that is gone leaves the cursor where it was.
+    pub fn filter(&self) -> Option<&str> {
+        self.filter.as_deref()
+    }
+
+    /// Opens the filter box, or narrows the rows to `text` while it is open; `None`
+    /// closes it and the whole tree comes back, folded as it was.
+    pub fn set_filter(&mut self, editor: &mut Editor, text: Option<String>) {
+        let opening = text.is_some() && self.filter.is_none();
+        let closing = text.is_none() && self.filter.is_some();
+        if opening {
+            self.folds_before = Some(self.folds.clone());
+            let root = self.root.clone();
+            let config = editor.config().file_explorer.clone();
+            super::background(
+                move || entries::walk_workspace(&root, &config),
+                |sidebar, editor, walk| sidebar.files.walk_landed(editor, walk),
+            );
+        }
+        if closing {
+            if let Some(folds) = self.folds_before.take() {
+                self.folds = folds;
+            }
+            self.walk = None;
+        }
+        self.filter = text;
+        self.rebuild(editor);
+    }
+
+    /// The walk of the workspace landed; kept only while the box that asked is still open.
+    fn walk_landed(&mut self, editor: &mut Editor, walk: entries::Walk) {
+        if self.filter.is_none() {
+            return;
+        }
+        if walk.capped {
+            editor.set_status(format!(
+                "the filter looks through the first {} files only",
+                entries::WALK_CAP
+            ));
+        }
+        self.walk = Some(walk);
+        self.rebuild(editor);
+    }
+
+    /// Something on disk changed under `path`, by one of the sidebar's own prompts: the
+    /// directory holding it is read again, and the cursor lands on it when it is there.
     pub fn disk_changed(&mut self, editor: &mut Editor, path: &Path) {
         self.folds.open_ancestors(&self.root, path);
+        let dir = self.listed_dir_holding(path);
+        self.pending = Some(Pending {
+            path: path.to_path_buf(),
+            center: false,
+        });
+        self.ask(editor, vec![dir]);
         self.rebuild(editor);
-        entries::reselect(&self.rows, &mut self.list, Some(path));
+    }
+
+    /// The nearest directory with a listing that shows `path`: itself when it is a listed
+    /// directory whose contents changed, else the first listed one above it, since a
+    /// flattened chain of directories is listed at its end alone.
+    fn listed_dir_holding(&self, path: &Path) -> PathBuf {
+        let mut dir = Some(path);
+        while let Some(current) = dir {
+            if current == self.root || self.listings.contains_key(current) {
+                return current.to_path_buf();
+            }
+            dir = current.parent();
+        }
+        self.root.clone()
+    }
+
+    /// Reads `dirs` off the main thread, the ones already being read left out.
+    fn ask(&mut self, editor: &mut Editor, dirs: Vec<PathBuf>) {
+        let dirs: Vec<PathBuf> = dirs
+            .into_iter()
+            .filter(|dir| self.asking.insert(dir.clone()))
+            .collect();
+        if dirs.is_empty() {
+            return;
+        }
+        let config = editor.config().file_explorer.clone();
+        super::background(
+            move || {
+                dirs.iter()
+                    .map(|dir| entries::list_dir(dir, &config))
+                    .collect::<Vec<Listed>>()
+            },
+            |sidebar, editor, listed| sidebar.files.landed(editor, listed),
+        );
+    }
+
+    fn landed(&mut self, editor: &mut Editor, listed: Vec<Listed>) {
+        for read in listed {
+            self.asking.remove(&read.dir);
+            if let Some(error) = read.error {
+                editor.set_error(error);
+            }
+            self.listings.insert(read.dir, read.listing);
+        }
+        self.rebuild(editor);
+        self.settle_pending();
+    }
+
+    /// Moves onto the path waited for once it is among the rows; a path that never shows
+    /// up, because nothing more is being read, stops being waited for.
+    fn settle_pending(&mut self) {
+        let Some(pending) = &self.pending else {
+            return;
+        };
+        let found = self
+            .rows
+            .iter()
+            .position(|row| row.path() == Some(pending.path.as_path()));
+        match found {
+            Some(index) => {
+                self.list.select(index);
+                if pending.center {
+                    self.list.center();
+                }
+                self.pending = None;
+            }
+            None if self.asking.is_empty() => self.pending = None,
+            None => {}
+        }
+    }
+
+    /// The directories the rows are laid out from: the root and every open one read so far.
+    fn dirs_on_screen(&self) -> Vec<PathBuf> {
+        let mut dirs = vec![self.root.clone()];
+        let open = self
+            .listings
+            .keys()
+            .filter(|dir| **dir != self.root && self.folds.is_open(dir))
+            .cloned();
+        dirs.extend(open);
+        dirs
+    }
+
+    /// Starts the looks at the disk, one every `REFRESH` while the tab is on screen.
+    fn watch(&mut self) {
+        if self.armed {
+            return;
+        }
+        self.armed = true;
+        super::later(REFRESH, |sidebar, editor| {
+            sidebar.files.armed = false;
+            if sidebar.showing(TabKind::Files) {
+                sidebar.files.poll(editor);
+            }
+        });
+    }
+
+    /// Looks at the open directories off the main thread and reads again the ones that
+    /// moved; a read already under way is left to land first.
+    fn poll(&mut self, editor: &mut Editor) {
+        if self.polling || !self.asking.is_empty() {
+            self.watch();
+            return;
+        }
+        self.polling = true;
+        let config = editor.config().file_explorer.clone();
+        let watched: Vec<(PathBuf, entries::Listing)> = self
+            .dirs_on_screen()
+            .into_iter()
+            .filter_map(|dir| {
+                let listing = self.listings.get(&dir)?.clone();
+                Some((dir, listing))
+            })
+            .collect();
+        super::background(
+            move || {
+                watched
+                    .iter()
+                    .filter(|(_, listing)| entries::fingerprint_moved(listing))
+                    .map(|(dir, _)| entries::list_dir(dir, &config))
+                    .collect::<Vec<Listed>>()
+            },
+            |sidebar, editor, listed| {
+                sidebar.files.polling = false;
+                if !listed.is_empty() {
+                    sidebar.files.landed(editor, listed);
+                }
+                if sidebar.showing(TabKind::Files) {
+                    sidebar.files.watch();
+                }
+            },
+        );
     }
 }
 
@@ -67,6 +286,8 @@ impl TabView for FilesTab {
         Some(&mut self.folds)
     }
 
+    /// Lays the rows out from the listings held, asking for the open directories that
+    /// have none; until those land the rows stay as they are, never blank.
     fn rebuild(&mut self, editor: &mut Editor) {
         let selected = self
             .rows
@@ -74,13 +295,54 @@ impl TabView for FilesTab {
             .and_then(Row::path)
             .map(Path::to_path_buf);
         let mut rows = Vec::new();
-        entries::list_disk(&self.root, 0, editor, &self.folds, &mut rows);
-        self.rows = rows;
-        entries::reselect(&self.rows, &mut self.list, selected.as_deref());
+        let mut missing = Vec::new();
+        entries::list_cached(
+            &self.root,
+            0,
+            &self.folds,
+            &self.listings,
+            &mut rows,
+            &mut missing,
+        );
+        let unread_root = !self.listings.contains_key(&self.root);
+        let filter = self.filter.as_deref().filter(|text| !text.is_empty());
+        let mut laid_out = !unread_root;
+        if let Some(filter) = filter {
+            if let Some(walk) = &self.walk {
+                rows = entries::narrow_walk(&self.root, &walk.files, filter);
+                laid_out = true;
+            } else {
+                rows = entries::narrow(rows, &self.root, filter);
+            }
+        }
+        if laid_out {
+            self.rows = rows;
+            entries::reselect(&self.rows, &mut self.list, selected.as_deref());
+            // A filter is typed to open a file: the cursor waits on the first one that
+            // matches, so Enter opens it and never folds the directory above it.
+            if filter.is_some() {
+                let first_file = self
+                    .rows
+                    .iter()
+                    .position(|row| row.entry().is_some_and(|entry| !entry.is_dir));
+                if let Some(index) = first_file {
+                    self.list.select(index);
+                }
+            }
+        }
+        self.ask(editor, missing);
     }
 
+    fn shown(&mut self, _cx: &mut TabContext) {
+        self.watch();
+    }
+
+    /// F5: every directory on screen is read again, and what is folded away is forgotten,
+    /// so it is read fresh when opened.
     fn refresh(&mut self, cx: &mut TabContext) {
-        self.rebuild(cx.editor);
+        let on_screen = self.dirs_on_screen();
+        self.listings.retain(|dir, _| on_screen.contains(dir));
+        self.ask(cx.editor, on_screen);
     }
 
     fn open(&mut self, cx: &mut TabContext, _how: Activation) -> Outcome {
@@ -100,9 +362,12 @@ impl TabView for FilesTab {
             return;
         }
         self.folds.open_ancestors(&self.root, path);
+        self.pending = Some(Pending {
+            path: path.to_path_buf(),
+            center: true,
+        });
         self.rebuild(editor);
-        entries::reselect(&self.rows, &mut self.list, Some(path));
-        self.list.center();
+        self.settle_pending();
     }
 
     fn edits_disk(&self) -> bool {
@@ -154,7 +419,18 @@ pub fn prompt_new(cx: &mut commands::Context, target: PromptTarget) {
         "A name ending in / makes a folder",
         "Create",
         Box::new(move |cx: &mut compositor::Context, input: String| {
-            let made = root.join(input.trim());
+            let made = match inside(&root, input.trim()) {
+                Ok(made) => made,
+                Err(err) => {
+                    cx.editor.set_error(err);
+                    return;
+                }
+            };
+            if made.exists() {
+                cx.editor
+                    .set_error(format!("{} already exists", made.display()));
+                return;
+            }
             let result = if input.trim_end().ends_with('/') {
                 std::fs::create_dir_all(&made)
             } else {
@@ -189,7 +465,13 @@ pub fn prompt_rename(cx: &mut commands::Context, target: PromptTarget) {
         "The new name, or a path to move it to",
         "Rename",
         Box::new(move |cx: &mut compositor::Context, input: String| {
-            let renamed_to = root.join(input.trim().trim_end_matches('/'));
+            let renamed_to = match inside(&root, input.trim().trim_end_matches('/')) {
+                Ok(renamed_to) => renamed_to,
+                Err(err) => {
+                    cx.editor.set_error(err);
+                    return;
+                }
+            };
             if renamed_to == source {
                 return;
             }
@@ -209,6 +491,11 @@ pub fn prompt_rename(cx: &mut commands::Context, target: PromptTarget) {
                 return;
             }
             retarget_documents(cx.editor, &source, &renamed_to);
+            // Both ends changed: where it was is read again first, where it went last, so
+            // the cursor follows it there.
+            if let Some(from) = source.parent() {
+                disk_changed(cx, from.to_path_buf());
+            }
             disk_changed(cx, renamed_to);
         }),
     )
@@ -255,14 +542,29 @@ pub fn prompt_delete(cx: &mut commands::Context, target: PromptTarget) {
     cx.push_layer(Box::new(Confirm::new("Confirm deletion", lines, answers)));
 }
 
+/// Where `name`, as typed in a prompt, lands below `root`. A name may go into
+/// subdirectories, made on the way; it may not leave the project, by being absolute or by
+/// climbing with `..`.
+fn inside(root: &Path, name: &str) -> Result<PathBuf, String> {
+    let relative = Path::new(name);
+    let climbs = relative
+        .components()
+        .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir));
+    if name.is_empty() || relative.is_absolute() || climbs {
+        return Err("the name must stay inside the project".to_string());
+    }
+    Ok(root.join(relative))
+}
+
 fn create_file(path: &Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    if path.exists() {
-        return Ok(());
-    }
-    std::fs::File::create(path).map(|_| ())
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map(|_| ())
 }
 
 /// Points every open buffer under `source` at its new location after a rename.
@@ -317,4 +619,33 @@ fn disk_changed(cx: &mut crate::compositor::Context, path: PathBuf) {
         Ok(call)
     });
     cx.jobs.callback(callback);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_name_stays_inside_the_project() {
+        let root = Path::new("/p");
+        assert_eq!(inside(root, "a.ts").unwrap(), root.join("a.ts"));
+        assert_eq!(inside(root, "a/b/c.ts").unwrap(), root.join("a/b/c.ts"));
+        assert_eq!(inside(root, "./a.ts").unwrap(), root.join("./a.ts"));
+
+        assert!(inside(root, "/etc/passwd").is_err());
+        assert!(inside(root, "../a.ts").is_err());
+        assert!(inside(root, "a/../../b.ts").is_err());
+        assert!(inside(root, "").is_err());
+    }
+
+    #[test]
+    fn a_file_is_not_created_over_one_that_exists() {
+        let dir = std::env::temp_dir().join(format!("coil-files-{}", std::process::id()));
+        let path = dir.join("made/a.txt");
+        create_file(&path).unwrap();
+        assert!(path.is_file());
+        let again = create_file(&path).unwrap_err();
+        assert_eq!(again.kind(), std::io::ErrorKind::AlreadyExists);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

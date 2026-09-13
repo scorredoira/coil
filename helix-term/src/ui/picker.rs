@@ -63,6 +63,13 @@ pub const ID: &str = "picker";
 /// reports each press on its own, so the picker has to tell them apart itself.
 const DOUBLE_CLICK: Duration = Duration::from_millis(500);
 
+/// The wheel's scroll of the preview, and the row it was given on.
+#[derive(Default)]
+struct PreviewScroll {
+    row: u32,
+    lines: isize,
+}
+
 pub const MIN_AREA_WIDTH_FOR_PREVIEW: u16 = 72;
 /// Biggest file size to preview in bytes
 pub const MAX_FILE_SIZE_FOR_PREVIEW: u64 = 10 * 1024 * 1024;
@@ -428,6 +435,12 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     rows_offset: u32,
     /// The row last clicked and when, so a second click on it opens it.
     last_click: Option<(u32, Instant)>,
+    /// Where the preview was last drawn, empty while there is none, so the wheel over it
+    /// scrolls the preview and not the list.
+    preview_area: Rect,
+    /// How far the wheel moved the preview from where the row put it. It is the row's:
+    /// another row starts where its own match is.
+    preview_scroll: PreviewScroll,
     /// What `Alt-a` and a box's button do with the panel's inputs and the results
     /// on screen. The search panel replaces every match with it.
     panel_action: Option<PanelCallback<T>>,
@@ -578,6 +591,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             rows_area: Rect::default(),
             rows_offset: 0,
             last_click: None,
+            preview_area: Rect::default(),
+            preview_scroll: PreviewScroll::default(),
             panel_action: None,
             hint: &[],
             title: None,
@@ -941,10 +956,23 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
     }
 
     /// A click marks the row it lands on, so the preview shows it, and a second
-    /// click on that row opens it. The wheel walks the list without opening anything.
+    /// click on that row opens it. The wheel walks the list without opening anything,
+    /// and over the preview it scrolls the preview. The pointer merely moving is nobody's:
+    /// taking it would repaint the screen at every motion.
     fn handle_mouse(&mut self, event: &MouseEvent, ctx: &mut Context) -> EventResult {
+        if event.kind == MouseEventKind::Moved {
+            return EventResult::Ignored(None);
+        }
+
         let len = self.matcher.snapshot().matched_item_count();
         let lines = ctx.editor.config().scroll_lines.unsigned_abs() as u32;
+        let on_preview = {
+            let area = self.preview_area;
+            event.row >= area.y
+                && event.row < area.bottom()
+                && event.column >= area.x
+                && event.column < area.right()
+        };
 
         // A click anywhere on an input line left of its right edge, the label
         // included, puts the focus there.
@@ -995,6 +1023,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                 }
                 self.last_click = Some((index, now));
             }
+            MouseEventKind::ScrollDown if on_preview => self.scroll_preview(lines as isize),
+            MouseEventKind::ScrollUp if on_preview => self.scroll_preview(-(lines as isize)),
             MouseEventKind::ScrollDown => {
                 self.cursor = self.cursor.saturating_add(lines).min(len.saturating_sub(1));
             }
@@ -1007,6 +1037,19 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         // Picker is a modal and should consume mouse events so clicks don't fall
         // through to the editor underneath
         EventResult::Consumed(None)
+    }
+
+    fn scroll_preview(&mut self, by: isize) {
+        let lines = if self.preview_scroll.row == self.cursor {
+            self.preview_scroll.lines
+        } else {
+            0
+        };
+
+        self.preview_scroll = PreviewScroll {
+            row: self.cursor,
+            lines: lines + by,
+        };
     }
 
     fn prompt_handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
@@ -1553,6 +1596,11 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         let inner = inner.inner(margin);
         BLOCK.render(area, surface);
 
+        let scrolled = if self.preview_scroll.row == self.cursor {
+            self.preview_scroll.lines
+        } else {
+            0
+        };
         if let Some((preview, range)) = self.get_preview(cx.editor) {
             let doc = match preview.document() {
                 Some(doc)
@@ -1612,6 +1660,14 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                 } else {
                     offset.anchor = start;
                 }
+            }
+
+            if scrolled != 0 {
+                let text = doc.text().slice(..);
+                let last = text.len_lines().saturating_sub(1) as isize;
+                let line = text.char_to_line(offset.anchor) as isize + scrolled;
+                offset.anchor = text.line_to_char(line.clamp(0, last) as usize);
+                offset.vertical_offset = 0;
             }
 
             let loader = cx.editor.syn_loader.load();
@@ -1703,7 +1759,10 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
 
         if render_preview {
             let preview_area = area.clip_left(picker_width);
+            self.preview_area = preview_area;
             self.render_preview(preview_area, surface, cx);
+        } else {
+            self.preview_area = Rect::default();
         }
     }
 

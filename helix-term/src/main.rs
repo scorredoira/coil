@@ -33,7 +33,7 @@ async fn main_impl() -> Result<i32> {
     if args.display_help {
         print!(
             "\
-{} {}
+coil {}
 {}
 {}
 
@@ -64,7 +64,6 @@ FLAGS:
     +[N]                           Open the first given file at line number N, or the last line, if
                                    N is not specified.
 ",
-            "coil",
             VERSION_AND_GIT_HASH,
             env!("CARGO_PKG_AUTHORS"),
             env!("CARGO_PKG_DESCRIPTION"),

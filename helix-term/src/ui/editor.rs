@@ -8,11 +8,12 @@ use crate::{
     ui::{
         context_menu,
         document::{render_document, LinePos, TextRenderer},
+        lsp::hover::Hover,
         markdown_preview::MarkdownPreview,
         sidebar::{self, Sidebar},
         statusline,
         text_decorations::{self, Decoration, DecorationManager, InlineDiagnostics},
-        Completion, ProgressSpinners,
+        Completion, Popup, ProgressSpinners,
     },
 };
 
@@ -22,9 +23,11 @@ use helix_core::{
     movement::Direction,
     syntax::{self, OverlayHighlights},
     text_annotations::TextAnnotations,
+    textobject::{textobject_word, TextObject},
     unicode::width::UnicodeWidthStr,
     visual_offset_from_block, Change, Position, Range, Selection, Transaction,
 };
+use helix_lsp::lsp;
 use helix_view::{
     annotations::diagnostics::DiagnosticFilter,
     document::Mode,
@@ -33,9 +36,16 @@ use helix_view::{
     input::{KeyEvent, MouseButton, MouseEvent, MouseEventKind},
     keyboard::{KeyCode, KeyModifiers},
     tree::Separator,
-    Document, Editor, Theme, View,
+    Document, DocumentId, Editor, Theme, View,
 };
-use std::{mem::take, num::NonZeroUsize, ops, rc::Rc};
+use std::{
+    mem::take,
+    num::NonZeroUsize,
+    ops,
+    rc::Rc,
+    sync::{Arc, Mutex, MutexGuard},
+    time::{Duration, Instant},
+};
 
 use tui::{buffer::Buffer as Surface, text::Span};
 
@@ -54,8 +64,45 @@ pub struct EditorView {
     pub(crate) last_blame: Option<LastBlame>,
     /// The bufferline tabs of the last frame, so a click can land on one.
     bufferline_tabs: Vec<BufferlineTab>,
+    /// The rows the bufferline took in the last frame, so the wheel over it can be told.
+    bufferline_area: Rect,
+    /// The first tab drawn: the strip scrolls when the tabs do not all fit.
+    bufferline_first: usize,
+    /// The `‹` and `›` marks of the last frame, when tabs were hidden on that side.
+    bufferline_back: Option<Rect>,
+    bufferline_forward: Option<Rect>,
     /// The split separator being dragged: the mouse is its until the button is let go.
     dragged_separator: Option<Separator>,
+    /// The last click in the text, for a second and a third one on the same cell to
+    /// take the word and the line.
+    last_click: Option<Click>,
+    /// What a drag after a double or a triple click extends by, from the unit clicked.
+    drag_unit: Option<(ClickUnit, Range)>,
+    /// Where the pointer rests.
+    pointer: Option<(u16, u16)>,
+    /// When it last moved, shared with the hover timer so that it can wait out the moves
+    /// without waking the editor: a job landing per cell crossed would be a frame per cell.
+    pointer_moved_at: Arc<Mutex<Instant>>,
+    /// A hover timer is waiting; a move while it waits pushes it back, never adds one.
+    hover_armed: bool,
+    /// The document position the hover popup was asked for, not asked again while the
+    /// pointer stays on it.
+    hover_shown: Option<(DocumentId, usize)>,
+}
+
+#[derive(Clone, Copy)]
+struct Click {
+    at: Instant,
+    row: u16,
+    column: u16,
+    /// One for a click, two for a double click, three for a triple.
+    count: u8,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClickUnit {
+    Word,
+    Line,
 }
 
 struct BufferlineTab {
@@ -66,6 +113,50 @@ struct BufferlineTab {
     doc: helix_view::DocumentId,
     /// The tab is the file's preview rather than the file itself.
     preview: bool,
+}
+
+/// A tab before it is placed: the strip decides which ones fit.
+struct TabToDraw {
+    name: String,
+    mark: &'static str,
+    active: bool,
+    preview: bool,
+    doc: DocumentId,
+}
+
+impl TabToDraw {
+    fn width(&self) -> u16 {
+        self.name.width() as u16 + self.mark.width() as u16 + 2
+    }
+}
+
+/// The columns a `‹` or `›` mark takes at an edge of the bufferline.
+const MARK_WIDTH: u16 = 2;
+
+/// How many tabs from `first` fit in `width` columns, whole, leaving room for the mark
+/// on each side that has tabs hidden behind it. Half a tab hides its cross, and the
+/// cross is what a click aims for.
+fn tabs_that_fit(tabs: &[TabToDraw], first: usize, width: u16) -> usize {
+    let mut x = if first > 0 { MARK_WIDTH } else { 0 };
+    let mut count = 0;
+
+    for tab in &tabs[first..] {
+        let more_after = first + count + 1 < tabs.len();
+        let forward_mark = if more_after { MARK_WIDTH } else { 0 };
+        if x + tab.width() + forward_mark > width {
+            break;
+        }
+
+        x += tab.width() + 1;
+        count += 1;
+    }
+
+    count
+}
+
+/// Whether a screen cell is inside an area.
+fn hits(area: Rect, row: u16, column: u16) -> bool {
+    row >= area.top() && row < area.bottom() && column >= area.left() && column < area.right()
 }
 
 /// Where a click on the bufferline landed.
@@ -80,6 +171,12 @@ const BUFFERLINE_HEIGHT: u16 = 3;
 
 /// How many lines a click has to land away from the cursor to count as a jump.
 const JUMP_LINES: usize = 10;
+
+/// How soon after a click a second one on the same cell counts as a double click.
+const DOUBLE_CLICK: Duration = Duration::from_millis(500);
+
+/// How long the pointer rests on the text before what is under it is asked for.
+const HOVER_DELAY: Duration = Duration::from_millis(400);
 
 #[derive(Debug, Clone)]
 pub enum InsertEvent {
@@ -106,7 +203,17 @@ impl EditorView {
             markdown_preview: MarkdownPreview::new(),
             last_blame: None,
             bufferline_tabs: Vec::new(),
+            bufferline_area: Rect::default(),
+            bufferline_first: 0,
+            bufferline_back: None,
+            bufferline_forward: None,
             dragged_separator: None,
+            last_click: None,
+            drag_unit: None,
+            pointer: None,
+            pointer_moved_at: Arc::new(Mutex::new(Instant::now())),
+            hover_armed: false,
+            hover_shown: None,
         }
     }
 
@@ -701,7 +808,8 @@ impl EditorView {
 
     /// Render bufferline at the top
     pub fn render_bufferline(&mut self, editor: &Editor, viewport: Rect, surface: &mut Surface) {
-        self.bufferline_tabs.clear();
+        self.clear_bufferline();
+        self.bufferline_area = viewport;
         surface.clear_with(
             viewport,
             editor
@@ -740,13 +848,13 @@ impl EditorView {
             draw_half_block(surface, x, bottom, background, editor_background);
         }
 
-        let mut x = viewport.x;
         let current_doc = view!(editor).doc;
 
         // The preview filling the screen is a tab of its own beside its file's, and it is
         // the one lit: the file it renders is not what you are looking at.
         let full_preview = self.markdown_preview.is_full(editor);
 
+        let mut tabs = Vec::new();
         for doc in editor.documents() {
             let fname = match doc.path() {
                 Some(path) => path
@@ -762,63 +870,95 @@ impl EditorView {
             // A modified buffer shows a dot where the cross goes, as it cannot be
             // closed without losing its changes.
             let mark = if doc.is_modified() { "●" } else { "×" };
-            let mut tabs = vec![(
-                format!("  {fname}  "),
+            tabs.push(TabToDraw {
+                name: format!("  {fname}  "),
                 mark,
-                is_current && !full_preview,
-                false,
-            )];
+                active: is_current && !full_preview,
+                preview: false,
+                doc: doc.id(),
+            });
             if full_preview && is_current {
-                tabs.push((format!("  {fname} ✓  "), "×", true, true));
-            }
-
-            for (name, mark, active, preview) in tabs {
-                let style = if active {
-                    bufferline_active
-                } else {
-                    bufferline_inactive
-                };
-                let tab_background = style.bg.or(background);
-                let width = name.width() as u16 + mark.width() as u16 + 2;
-
-                // A tab that would not fit whole is not drawn: half a tab hides its
-                // cross, and the cross is what a click aims for.
-                if x + width > viewport.right() {
-                    return;
-                }
-
-                let area = Rect::new(x, top, width, BUFFERLINE_HEIGHT);
-                for column in area.left()..area.right() {
-                    draw_half_block(surface, column, top, background, tab_background);
-                    draw_half_block(surface, column, bottom, tab_background, editor_background);
-                }
-
-                let close = x + name.width() as u16;
-                surface.set_string(x, middle, &name, style);
-                surface.set_string(close, middle, mark, style);
-                surface.set_string(close + mark.width() as u16, middle, "  ", style);
-
-                self.bufferline_tabs.push(BufferlineTab {
-                    area,
-                    close,
+                tabs.push(TabToDraw {
+                    name: format!("  {fname} ✓  "),
+                    mark: "×",
+                    active: true,
+                    preview: true,
                     doc: doc.id(),
-                    preview,
                 });
-
-                // One column of bar between tabs.
-                x += width + 1;
             }
+        }
+
+        // The strip starts where it was left, and moves only as far as it must for the
+        // tab in front to be on screen.
+        let current = tabs.iter().position(|tab| tab.active).unwrap_or(0);
+        let mut first = self.bufferline_first.min(current);
+        let mut shown = tabs_that_fit(&tabs, first, viewport.width);
+        while first < current && first + shown <= current {
+            first += 1;
+            shown = tabs_that_fit(&tabs, first, viewport.width);
+        }
+        self.bufferline_first = first;
+
+        let mut x = viewport.x;
+        if first > 0 {
+            let area = Rect::new(x, top, MARK_WIDTH, BUFFERLINE_HEIGHT);
+            surface.set_string(x, middle, "‹", bufferline_inactive);
+            self.bufferline_back = Some(area);
+            x += MARK_WIDTH;
+        }
+
+        for tab in &tabs[first..first + shown] {
+            let style = if tab.active {
+                bufferline_active
+            } else {
+                bufferline_inactive
+            };
+            let tab_background = style.bg.or(background);
+            let width = tab.width();
+
+            let area = Rect::new(x, top, width, BUFFERLINE_HEIGHT);
+            for column in area.left()..area.right() {
+                draw_half_block(surface, column, top, background, tab_background);
+                draw_half_block(surface, column, bottom, tab_background, editor_background);
+            }
+
+            let close = x + tab.name.width() as u16;
+            surface.set_string(x, middle, &tab.name, style);
+            surface.set_string(close, middle, tab.mark, style);
+            surface.set_string(close + tab.mark.width() as u16, middle, "  ", style);
+
+            self.bufferline_tabs.push(BufferlineTab {
+                area,
+                close,
+                doc: tab.doc,
+                preview: tab.preview,
+            });
+
+            // One column of bar between tabs.
+            x += width + 1;
+        }
+
+        if first + shown < tabs.len() {
+            let x = viewport.right() - MARK_WIDTH;
+            let area = Rect::new(x, top, MARK_WIDTH, BUFFERLINE_HEIGHT);
+            surface.set_string(x + 1, middle, "›", bufferline_inactive);
+            self.bufferline_forward = Some(area);
         }
     }
 
+    /// Forgets the last frame's bufferline, so nothing of it can be clicked.
+    fn clear_bufferline(&mut self) {
+        self.bufferline_tabs.clear();
+        self.bufferline_area = Rect::default();
+        self.bufferline_back = None;
+        self.bufferline_forward = None;
+    }
+
     fn bufferline_hit(&self, row: u16, column: u16) -> Option<BufferlineHit> {
-        let tab = self.bufferline_tabs.iter().find(|tab| {
-            let area = tab.area;
-            row >= area.top()
-                && row < area.bottom()
-                && column >= area.left()
-                && column < area.right()
-        })?;
+        let tab = self
+            .bufferline_tabs
+            .iter()
+            .find(|tab| hits(tab.area, row, column))?;
 
         // The cross takes a column either side too: a single cell is a small target.
         let closing = column + 1 >= tab.close && column <= tab.close + 1;
@@ -1340,6 +1480,17 @@ impl EditorView {
             ..
         } = *event;
 
+        // A move stores where the pointer is and arms the timer, nothing more: the
+        // terminal reports every cell crossed, and none of them is worth a frame.
+        if kind == MouseEventKind::Moved && self.pointer != Some((row, column)) {
+            self.pointer = Some((row, column));
+            *lock(&self.pointer_moved_at) = Instant::now();
+            if !self.hover_armed {
+                self.hover_armed = true;
+                arm_hover_timer(self.pointer_moved_at.clone());
+            }
+        }
+
         // A drag of the sidebar's separator stays the sidebar's when the mouse leaves it.
         if self.sidebar.contains(row, column) || self.sidebar.resizing() {
             return self.sidebar.handle_mouse(event, cxt);
@@ -1371,6 +1522,38 @@ impl EditorView {
             if let Some(separator) = cxt.editor.tree.separator_at(row, column) {
                 self.dragged_separator = Some(separator);
                 return EventResult::Consumed(None);
+            }
+        }
+
+        if kind == MouseEventKind::Down(MouseButton::Left) {
+            if self
+                .bufferline_back
+                .is_some_and(|mark| hits(mark, row, column))
+            {
+                self.bufferline_first = self.bufferline_first.saturating_sub(1);
+                return EventResult::Consumed(None);
+            }
+            if self
+                .bufferline_forward
+                .is_some_and(|mark| hits(mark, row, column))
+            {
+                self.bufferline_first += 1;
+                return EventResult::Consumed(None);
+            }
+        }
+
+        // The wheel over the tabs walks them, the way a click on one opens it.
+        if hits(self.bufferline_area, row, column) {
+            match kind {
+                MouseEventKind::ScrollUp => {
+                    commands::MappableCommand::goto_previous_buffer.execute(cxt);
+                    return EventResult::Consumed(None);
+                }
+                MouseEventKind::ScrollDown => {
+                    commands::MappableCommand::goto_next_buffer.execute(cxt);
+                    return EventResult::Consumed(None);
+                }
+                _ => {}
             }
         }
 
@@ -1443,10 +1626,47 @@ impl EditorView {
 
         match kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                // Held with Ctrl, or Cmd where the terminal passes it on, a click goes to
+                // the definition of what it landed on. The caret goes there first, since
+                // that is what the request is made for; nothing else moves.
+                let goto = modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER);
+                if goto {
+                    let Some((pos, view_id)) = pos_and_view(cxt.editor, row, column, true) else {
+                        return EventResult::Ignored(None);
+                    };
+
+                    cxt.editor.focus(view_id);
+                    let doc = doc_mut!(cxt.editor, &view!(cxt.editor, view_id).doc);
+                    doc.set_selection(view_id, Selection::point(pos));
+                    cxt.editor.ensure_cursor_in_view(view_id);
+                    commands::MappableCommand::goto_definition.execute(cxt);
+
+                    return EventResult::Consumed(None);
+                }
+
+                let now = Instant::now();
+                let count = match self.last_click {
+                    Some(click)
+                        if click.row == row
+                            && click.column == column
+                            && now.duration_since(click.at) < DOUBLE_CLICK =>
+                    {
+                        click.count % 3 + 1
+                    }
+                    _ => 1,
+                };
+                self.drag_unit = None;
+
                 let editor = &mut cxt.editor;
 
                 if let Some((pos, view_id)) = pos_and_view(editor, row, column, true) {
                     editor.focus(view_id);
+                    self.last_click = Some(Click {
+                        at: now,
+                        row,
+                        column,
+                        count,
+                    });
 
                     // A click that lands far from the cursor is a jump: leaving by clicking
                     // is still leaving, and coming back is what the back key is for.
@@ -1464,7 +1684,20 @@ impl EditorView {
                     let prev_view_id = view!(editor).id;
                     let doc = doc_mut!(editor, &view!(editor, view_id).doc);
 
-                    if modifiers == KeyModifiers::ALT {
+                    if count > 1 && modifiers.is_empty() {
+                        // A second click takes the word, a third the line, and a drag from
+                        // there grows by the same unit. Typing over it replaces it, as a
+                        // selection made with Shift and an arrow does.
+                        let unit = if count == 2 {
+                            ClickUnit::Word
+                        } else {
+                            ClickUnit::Line
+                        };
+                        let range = unit_range(doc.text().slice(..), pos, unit);
+                        doc.set_selection(view_id, Selection::single(range.anchor, range.head));
+                        self.drag_unit = Some((unit, range));
+                        commands::mark_insert_selection(editor);
+                    } else if modifiers == KeyModifiers::ALT {
                         let selection = doc.selection(view_id).clone();
                         doc.set_selection(view_id, selection.push(Range::point(pos)));
                     } else if editor.mode == Mode::Select {
@@ -1523,7 +1756,18 @@ impl EditorView {
 
                 let mut selection = doc.selection(view.id).clone();
                 let primary = selection.primary_mut();
-                *primary = primary.put_cursor(doc.text().slice(..), pos, true);
+                *primary = match self.drag_unit {
+                    // From the word or line clicked to the one under the pointer, whole.
+                    Some((unit, origin)) => {
+                        let here = unit_range(doc.text().slice(..), pos, unit);
+                        if here.from() >= origin.from() {
+                            Range::new(origin.from(), here.to())
+                        } else {
+                            Range::new(origin.to(), here.from())
+                        }
+                    }
+                    None => primary.put_cursor(doc.text().slice(..), pos, true),
+                };
                 doc.set_selection(view.id, selection);
                 let view_id = view.id;
                 cxt.editor.ensure_cursor_in_view(view_id);
@@ -1910,7 +2154,7 @@ impl Component for EditorView {
                 Rect::new(editor_area.x, area.y, editor_area.width, BUFFERLINE_HEIGHT);
             self.render_bufferline(cx.editor, bufferline_area, surface);
         } else {
-            self.bufferline_tabs.clear();
+            self.clear_bufferline();
         }
 
         // The preview on its own takes the room the views would have had, and they are
@@ -2305,6 +2549,136 @@ pub(crate) fn later(
                 return;
             };
             then(editor, view);
+        })
+        .await;
+    });
+}
+
+/// An instant cannot be left half-written, so a lock poisoned by a panic elsewhere is
+/// still worth reading.
+fn lock(moved_at: &Mutex<Instant>) -> MutexGuard<'_, Instant> {
+    moved_at
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Waits until the pointer has rested for `HOVER_DELAY` since its last move, sleeping
+/// again for the rest each time a move pushed it back, and only then lands on the editor.
+fn arm_hover_timer(moved_at: Arc<Mutex<Instant>>) {
+    tokio::spawn(async move {
+        loop {
+            let rest = HOVER_DELAY.saturating_sub(lock(&moved_at).elapsed());
+            if rest.is_zero() {
+                break;
+            }
+            tokio::time::sleep(rest).await;
+        }
+        crate::job::dispatch(hover_at_pointer).await;
+    });
+}
+
+/// The word or the line at a position, as a double or a triple click takes it.
+fn unit_range(text: helix_core::RopeSlice, pos: usize, unit: ClickUnit) -> Range {
+    match unit {
+        ClickUnit::Word => textobject_word(text, Range::point(pos), TextObject::Inside, 1, false),
+        ClickUnit::Line => {
+            let line = text.char_to_line(pos);
+            Range::new(text.line_to_char(line), text.line_to_char(line + 1))
+        }
+    }
+}
+
+/// The hover timer landing: the pointer has rested on a cell for a while. Asks what is
+/// there if it is text the popup is not already open for, and closes the popup when the
+/// pointer has left it.
+fn hover_at_pointer(editor: &mut Editor, compositor: &mut Compositor) {
+    let Some(view) = compositor.find::<EditorView>() else {
+        return;
+    };
+    view.hover_armed = false;
+
+    // Moved again between the timer and this landing: wait out the rest.
+    if lock(&view.pointer_moved_at).elapsed() < HOVER_DELAY {
+        view.hover_armed = true;
+        arm_hover_timer(view.pointer_moved_at.clone());
+        return;
+    }
+    let Some((row, column)) = view.pointer else {
+        return;
+    };
+    let shown = view.hover_shown;
+
+    // Reading the popup is not asking for another.
+    let screen = compositor.size();
+    let popup = compositor.find_id::<Popup<Hover>>(Hover::ID);
+    let open = popup.is_some();
+    if popup.is_some_and(|popup| hits(popup.area(screen, editor), row, column)) {
+        return;
+    }
+
+    let under = editor.tree.views().find_map(|(view, _focus)| {
+        let doc = &editor.documents[&view.doc];
+        view.pos_at_screen_coords(doc, row, column, true)
+            .map(|pos| (doc.id(), pos))
+    });
+    let Some((doc_id, pos)) = under else {
+        compositor.remove(Hover::ID);
+        return;
+    };
+
+    if open && shown == Some((doc_id, pos)) {
+        return;
+    }
+    compositor.remove(Hover::ID);
+
+    let doc = &editor.documents[&doc_id];
+    let diagnostic = doc
+        .diagnostics()
+        .iter()
+        .find(|diagnostic| diagnostic.range.start <= pos && pos < diagnostic.range.end)
+        .map(|diagnostic| {
+            let source = diagnostic
+                .source
+                .clone()
+                .unwrap_or_else(|| "diagnostic".to_string());
+            let hover = lsp::Hover {
+                contents: lsp::HoverContents::Scalar(lsp::MarkedString::String(
+                    diagnostic.message.clone(),
+                )),
+                range: None,
+            };
+            (source, hover)
+        });
+    let request = commands::lsp::request_hover(doc, pos);
+    if diagnostic.is_none() && request.is_empty() {
+        return;
+    }
+
+    let Some(view) = compositor.find::<EditorView>() else {
+        return;
+    };
+    view.hover_shown = Some((doc_id, pos));
+
+    let at = Position::new(row as usize, column as usize);
+    tokio::spawn(async move {
+        let mut hovers = request.answer().await;
+        // What is wrong there comes first: it is what one points at to find out.
+        if let Some(diagnostic) = diagnostic {
+            hovers.insert(0, diagnostic);
+        }
+        crate::job::dispatch(move |editor, compositor| {
+            let Some(view) = compositor.find::<EditorView>() else {
+                return;
+            };
+            // The pointer has moved on since the question was asked.
+            if view.hover_shown != Some((doc_id, pos)) {
+                return;
+            }
+            if hovers.is_empty() {
+                view.hover_shown = None;
+                return;
+            }
+            commands::lsp::show_hover(editor, compositor, hovers, Some(at));
         })
         .await;
     });

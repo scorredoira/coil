@@ -31,7 +31,7 @@ use crate::ui::context_menu;
 use crate::ui::editor;
 use crate::ui::panel_width;
 
-use changes::ChangesTab;
+use changes::{Act, ChangesTab};
 use commits::CommitsTab;
 use diff_view::DiffView;
 use entries::{Row, RowPaint};
@@ -191,6 +191,19 @@ impl Sidebar {
         self.revealed = None;
     }
 
+    /// Shows the Files tab, focused, on the file being edited.
+    pub fn reveal(&mut self, editor: &mut Editor) {
+        let was_showing = self.showing(TabKind::Files);
+        self.open = true;
+        self.focused = true;
+        self.tab = TabKind::Files;
+        if !was_showing {
+            self.came_on_screen(editor);
+        }
+        // The render moves onto the current file, once it knows how many rows fit.
+        self.revealed = None;
+    }
+
     /// Shows the history of one file in the Commits tab, focused.
     pub fn show_history(&mut self, editor: &mut Editor, path: PathBuf) {
         if !path.starts_with(&self.root) {
@@ -248,6 +261,14 @@ impl Sidebar {
 
     /// The tab on screen was just put there: it lays itself out and asks what it asks.
     fn came_on_screen(&mut self, editor: &mut Editor) {
+        if !self.built {
+            // Said from a job of the editor's, not from the render that first needs it.
+            later(Duration::ZERO, |sidebar, editor| {
+                if let Some(err) = sidebar.width_error.take() {
+                    editor.set_error(err);
+                }
+            });
+        }
         self.built = true;
         let (tab, diff) = self.parts();
         tab.rebuild(editor);
@@ -389,6 +410,17 @@ impl Sidebar {
 
     pub fn handle_key(&mut self, key: KeyEvent, cx: &mut commands::Context) -> EventResult {
         let editor = &mut cx.editor;
+        if self.tab == TabKind::Files {
+            if let Some(result) = self.handle_filter_key(key, editor) {
+                return result;
+            }
+        }
+        if self.tab == TabKind::Changes {
+            if let Some(result) = self.handle_changes_key(key, cx) {
+                return result;
+            }
+        }
+        let editor = &mut cx.editor;
         if self.tab == TabKind::Commits && self.commits.has_columns() {
             if key.code == KeyCode::Left && key.modifiers.is_empty() {
                 self.commits.focus_files(false);
@@ -494,6 +526,59 @@ impl Sidebar {
         EventResult::Consumed(None)
     }
 
+    /// The filter box of the Files tab: Ctrl-f opens it, what is typed narrows the rows,
+    /// Backspace takes a letter back, and Esc clears it and brings the whole tree back.
+    /// Answers only for the keys the box takes.
+    fn handle_filter_key(&mut self, key: KeyEvent, editor: &mut Editor) -> Option<EventResult> {
+        let open = self.files.filter().is_some();
+        match (key.code, key.modifiers, open) {
+            (KeyCode::Char('f'), KeyModifiers::CONTROL, false) => {
+                self.files.set_filter(editor, Some(String::new()));
+            }
+            (KeyCode::Char('f'), KeyModifiers::CONTROL, true) => {}
+            (KeyCode::Esc, _, true) => {
+                self.files.set_filter(editor, None);
+                // The folds are back as they were, so the file opened from a match is
+                // revealed again at the next render.
+                self.revealed = None;
+            }
+            (KeyCode::Backspace, _, true) => {
+                let mut text = self.files.filter().unwrap_or_default().to_string();
+                text.pop();
+                self.files.set_filter(editor, Some(text));
+            }
+            (KeyCode::Char(char), KeyModifiers::NONE | KeyModifiers::SHIFT, true) => {
+                let mut text = self.files.filter().unwrap_or_default().to_string();
+                text.push(char);
+                self.files.set_filter(editor, Some(text));
+            }
+            _ => return None,
+        }
+        Some(EventResult::Consumed(None))
+    }
+
+    /// What the Changes tab does to the file under the cursor: `s` stages it, `u` takes it
+    /// out of the index, `d` or Delete throws its working changes away, after asking.
+    fn handle_changes_key(
+        &mut self,
+        key: KeyEvent,
+        cx: &mut commands::Context,
+    ) -> Option<EventResult> {
+        let act = match (key.code, key.modifiers) {
+            (KeyCode::Char('s'), KeyModifiers::NONE) => Act::Stage,
+            (KeyCode::Char('u'), KeyModifiers::NONE) => Act::Unstage,
+            (KeyCode::Char('d'), KeyModifiers::NONE) | (KeyCode::Delete, _) => Act::Discard,
+            _ => return None,
+        };
+        let file = self.changes.file_under_cursor()?;
+        if act == Act::Discard {
+            changes::confirm_discard(cx, &self.root, file);
+        } else {
+            self.changes.act(act, file);
+        }
+        Some(EventResult::Consumed(None))
+    }
+
     pub fn contains(&self, row: u16, column: u16) -> bool {
         self.open
             && row >= self.area.y
@@ -502,10 +587,14 @@ impl Sidebar {
             && column < self.area.right()
     }
 
+    /// Answers `Consumed` only for an event that changed something: the terminal reports
+    /// every motion of the pointer, and a consumed event is a whole screen drawn again.
     pub fn handle_mouse(&mut self, event: &MouseEvent, cx: &mut commands::Context) -> EventResult {
         let editor = &mut cx.editor;
         let separator = self.area.right().saturating_sub(1);
-        if self.tab == TabKind::Commits && self.commits.has_columns() && event.row > self.area.y {
+        let pressed = matches!(event.kind, MouseEventKind::Down(_));
+        let in_columns = self.tab == TabKind::Commits && self.commits.has_columns();
+        if pressed && in_columns && event.row > self.area.y {
             let files = event.column >= self.area.x + self.area.width / 2;
             let changed = self.commits.columns()[0].2 == files;
             self.commits.focus_files(files);
@@ -554,6 +643,20 @@ impl Sidebar {
 
                 return open_menu(event.row, event.column, self.prompt_target());
             }
+            MouseEventKind::Down(MouseButton::Right) if self.tab == TabKind::Changes => {
+                self.focused = true;
+                let line = event.row.saturating_sub(self.area.y) as usize;
+                if line > 0 {
+                    if let Some(index) = self.active().list().row_at(line - 1) {
+                        self.active_mut().list_mut().select(index);
+                    }
+                }
+                let Some(file) = self.changes.file_under_cursor() else {
+                    return EventResult::Consumed(None);
+                };
+
+                return open_changes_menu(event.row, event.column, self.root.clone(), file);
+            }
             MouseEventKind::Down(MouseButton::Left) => {
                 self.focused = true;
                 // The first line holds the tabs, not a row.
@@ -592,13 +695,18 @@ impl Sidebar {
             }
             MouseEventKind::ScrollDown => {
                 let lines = editor.config().scroll_lines;
-                self.scroll_by(editor, lines);
+                if !self.scroll_by(editor, lines) {
+                    return EventResult::Ignored(None);
+                }
             }
             MouseEventKind::ScrollUp => {
                 let lines = editor.config().scroll_lines;
-                self.scroll_by(editor, -lines);
+                if !self.scroll_by(editor, -lines) {
+                    return EventResult::Ignored(None);
+                }
             }
-            _ => {}
+            // A motion, a release, a drag of nothing: nothing to draw again.
+            _ => return EventResult::Ignored(None),
         }
         EventResult::Consumed(None)
     }
@@ -637,19 +745,19 @@ impl Sidebar {
         }
     }
 
-    fn scroll_by(&mut self, editor: &mut Editor, lines: isize) {
+    /// Scrolls the rows; says whether anything moved.
+    fn scroll_by(&mut self, editor: &mut Editor, lines: isize) -> bool {
         let list = self.active_mut().list_mut();
-        let before = list.cursor;
+        let before = (list.cursor, list.scroll);
         list.scroll_by(lines);
-        if list.cursor != before {
+        let after = (list.cursor, list.scroll);
+        if after.0 != before.0 {
             self.cursor_moved(editor);
         }
+        after != before
     }
 
     pub fn render(&mut self, area: Rect, surface: &mut Surface, editor: &mut Editor) {
-        if let Some(err) = self.width_error.take() {
-            editor.set_error(err);
-        }
         self.area = area;
         let page = area.height.saturating_sub(1) as usize;
         self.active_mut().list_mut().set_page(page);
@@ -679,22 +787,36 @@ impl Sidebar {
             surface.set_string(area.right() - 1, y, "│", separator_style);
         }
 
-        let labels = [
-            self.files.label(),
-            self.changes.label(),
-            self.commits.label(),
-        ];
-        let mut x = area.x + 1;
-        for (index, (kind, label)) in TabKind::ALL.iter().zip(labels).enumerate() {
-            let style = if *kind == self.tab {
-                header_style
-            } else {
-                inactive_style
-            };
+        let filter = self.files.filter().filter(|_| self.tab == TabKind::Files);
+        if let Some(filter) = filter {
+            // The box takes the strip's row; a click there is not a tab's while it is open.
+            self.tab_columns = [(0, 0); TabKind::ALL.len()];
+            let x = area.x + 1;
             let room = (area.right() - 1).saturating_sub(x) as usize;
-            let (end, _) = surface.set_stringn(x, area.y, &label, room, style);
-            self.tab_columns[index] = (x, end);
-            x = end + 2;
+            let (end, _) = surface.set_stringn(x, area.y, "Filter: ", room, inactive_style);
+            let room = (area.right() - 1).saturating_sub(end) as usize;
+            let (end, _) = surface.set_stringn(end, area.y, filter, room, theme.get("ui.text"));
+            if (end as usize) < area.right() as usize - 1 {
+                surface.set_string(end, area.y, "▏", header_style);
+            }
+        } else {
+            let labels = [
+                self.files.label(),
+                self.changes.label(),
+                self.commits.label(),
+            ];
+            let mut x = area.x + 1;
+            for (index, (kind, label)) in TabKind::ALL.iter().zip(labels).enumerate() {
+                let style = if *kind == self.tab {
+                    header_style
+                } else {
+                    inactive_style
+                };
+                let room = (area.right() - 1).saturating_sub(x) as usize;
+                let (end, _) = surface.set_stringn(x, area.y, &label, room, style);
+                self.tab_columns[index] = (x, end);
+                x = end + 2;
+            }
         }
 
         let tab = self.active();
@@ -848,6 +970,52 @@ fn open_menu(row: u16, column: u16, target: PromptTarget) -> EventResult {
                 }),
             ),
         ];
+
+        compositor.push(Box::new(context_menu::ContextMenu::new(
+            (row, column),
+            entries,
+        )));
+    })))
+}
+
+/// What can be done to a changed file from the row the pointer is on; each has its key.
+fn open_changes_menu(row: u16, column: u16, root: PathBuf, file: git::ChangedFile) -> EventResult {
+    EventResult::Consumed(Some(Box::new(move |compositor, _cx| {
+        let mut entries = vec![context_menu::Entry::new(
+            "Open",
+            "Enter",
+            Box::new(move |compositor, cx| {
+                let Some(view) = compositor.find::<editor::EditorView>() else {
+                    return;
+                };
+                let mut tab_cx = TabContext {
+                    editor: cx.editor,
+                    diff: &mut view.sidebar.diff,
+                };
+                if view.sidebar.changes.open(&mut tab_cx, Activation::Enter) == Outcome::Leave {
+                    view.sidebar.focused = false;
+                }
+            }),
+        )];
+        for act in [Act::Stage, Act::Unstage, Act::Discard] {
+            let file = file.clone();
+            let root = root.clone();
+            entries.push(context_menu::Entry::new(
+                act.label(),
+                act.key(),
+                Box::new(move |compositor, cx| {
+                    if act == Act::Discard {
+                        context_menu::with_context(compositor, cx, |cx| {
+                            changes::confirm_discard(cx, &root, file)
+                        });
+                        return;
+                    }
+                    if let Some(view) = compositor.find::<editor::EditorView>() {
+                        view.sidebar.changes.act(act, file);
+                    }
+                }),
+            ));
+        }
 
         compositor.push(Box::new(context_menu::ContextMenu::new(
             (row, column),

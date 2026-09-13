@@ -28,8 +28,8 @@ impl Change {
         }
     }
 
-    /// What one `git status` entry says of a file, both columns read as one: staged or not
-    /// makes no difference to a list of what changed.
+    /// What one `git status` entry says of a file, both columns read as one, for the row's
+    /// colour and for what opening it means.
     fn from_status(index: u8, worktree: u8) -> Self {
         let either = |code: u8| index == code || worktree == code;
         if either(b'?') {
@@ -42,6 +42,16 @@ impl Change {
             Change::Added
         } else {
             Change::Modified
+        }
+    }
+
+    /// What one column of a `git status` entry says: nothing when it is blank, and an
+    /// untracked file is an addition git has not been told about.
+    fn from_status_column(code: u8) -> Option<Self> {
+        match code {
+            b' ' => None,
+            b'?' => Some(Change::Added),
+            code => Some(Change::from_name_status(code)),
         }
     }
 
@@ -64,6 +74,17 @@ pub struct ChangedFile {
     /// Where a renamed file came from, relative to the repository's top: a diff asked with
     /// both paths reads as a rename, with one alone as a new file.
     pub from: Option<String>,
+    /// What is staged, git's first column; nothing for a file in a commit.
+    pub staged: Option<Change>,
+    /// What is not staged yet, git's second column; nothing for a file in a commit.
+    pub unstaged: Option<Change>,
+}
+
+impl ChangedFile {
+    /// A file git does not know: nothing to unstage, and discarding it deletes it.
+    pub fn is_untracked(&self) -> bool {
+        self.staged.is_none() && self.unstaged == Some(Change::Added)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -230,6 +251,39 @@ pub fn blame(root: &Path, request: &BlameRequest) -> Answer<Blame> {
     parse_blame(&String::from_utf8_lossy(&output.stdout))
 }
 
+/// Stages `file` whole, its deletion included.
+pub fn stage(root: &Path, file: &ChangedFile) -> Answer<()> {
+    let path = format!(":(literal){}", file.path.display());
+    run(root, &["add", "-A", "--", &path]).map(|_| ())
+}
+
+/// Takes `file` out of the index; a staged rename goes with the path it came from, or
+/// that one would stay staged as a deletion.
+pub fn unstage(root: &Path, file: &ChangedFile) -> Answer<()> {
+    let path = format!(":(literal){}", file.path.display());
+    // Unlike `restore --staged`, reset also works before the first commit.
+    let mut args = vec!["reset", "--", path.as_str()];
+    let from = file.from.as_deref().map(pathspec);
+    if let Some(from) = &from {
+        args.push(from);
+    }
+    run(root, &args).map(|_| ())
+}
+
+/// Throws working changes away, preserving the index as the confirmation promises.
+/// An untracked file is deleted; a tracked file goes back to its staged contents.
+pub fn discard(root: &Path, file: &ChangedFile) -> Answer<()> {
+    if file.is_untracked() {
+        return std::fs::remove_file(&file.path)
+            .map_err(|err| format!("{}: {err}", file.path.display()));
+    }
+    if file.unstaged.is_none() {
+        return Err("No unstaged changes to discard; unstage the file first".to_string());
+    }
+    let path = format!(":(literal){}", file.path.display());
+    run(root, &["restore", "--", &path]).map(|_| ())
+}
+
 fn run(dir: &Path, args: &[&str]) -> Answer<Vec<u8>> {
     let output = Command::new("git")
         .arg("-C")
@@ -261,6 +315,12 @@ fn parse_status(status: &[u8], prefix: &str, root: &Path) -> Answer<Vec<ChangedF
             ));
         }
         let change = Change::from_status(entry[0], entry[1]);
+        let staged = if entry[0] == b'?' {
+            None
+        } else {
+            Change::from_status_column(entry[0])
+        };
+        let unstaged = Change::from_status_column(entry[1]);
         // A rename or a copy carries the path it came from as the next entry.
         let renamed = matches!(entry[0], b'R' | b'C') || matches!(entry[1], b'R' | b'C');
         let from = if renamed {
@@ -278,6 +338,8 @@ fn parse_status(status: &[u8], prefix: &str, root: &Path) -> Answer<Vec<ChangedF
             path: root.join(inside),
             change,
             from,
+            staged,
+            unstaged,
         });
     }
     Ok(files)
@@ -365,6 +427,8 @@ fn parse_name_status(listing: &[u8], prefix: &str, root: &Path) -> Answer<Vec<Ch
             path: root.join(inside),
             change: Change::from_name_status(letter),
             from,
+            staged: None,
+            unstaged: None,
         });
     }
     Ok(files)
@@ -417,6 +481,51 @@ fn parse_blame(answer: &str) -> Answer<Blame> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn file_actions_preserve_staged_changes_and_treat_names_literally() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        run(root, &["init", "--quiet"]).unwrap();
+        let path = root.join("[a].txt");
+        std::fs::write(&path, "base\n").unwrap();
+        let file = status(root).unwrap().remove(0);
+        stage(root, &file).unwrap();
+        // A new repository has no HEAD yet, but unstage must still work.
+        let file = status(root).unwrap().remove(0);
+        unstage(root, &file).unwrap();
+        assert!(status(root).unwrap()[0].is_untracked());
+        stage(root, &file).unwrap();
+        run(
+            root,
+            &[
+                "-c",
+                "user.name=Coil Test",
+                "-c",
+                "user.email=coil@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "initial",
+            ],
+        )
+        .unwrap();
+
+        std::fs::write(&path, "staged\n").unwrap();
+        let file = status(root).unwrap().remove(0);
+        stage(root, &file).unwrap();
+        let file = status(root).unwrap().remove(0);
+        assert!(discard(root, &file).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "staged\n");
+
+        std::fs::write(&path, "unstaged\n").unwrap();
+        let file = status(root).unwrap().remove(0);
+        discard(root, &file).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "staged\n");
+        let files = status(root).unwrap();
+        assert_eq!(files[0].staged, Some(Change::Modified));
+        assert_eq!(files[0].unstaged, None);
+    }
+
     fn root() -> PathBuf {
         PathBuf::from("/repo/sub")
     }
@@ -433,19 +542,47 @@ mod tests {
                     path: root().join("a.txt"),
                     change: Change::Modified,
                     from: None,
+                    staged: None,
+                    unstaged: Some(Change::Modified),
                 },
                 ChangedFile {
                     path: root().join("new.txt"),
                     change: Change::Added,
                     from: None,
+                    staged: None,
+                    unstaged: Some(Change::Added),
                 },
                 ChangedFile {
                     path: root().join("moved.txt"),
                     change: Change::Renamed,
                     from: Some("sub/old.txt".into()),
+                    staged: Some(Change::Renamed),
+                    unstaged: None,
                 },
             ]
         );
+    }
+
+    #[test]
+    fn status_reads_both_columns() {
+        let status = b"MM a.txt\0A  b.txt\0D  c.txt\0 D d.txt\0?? e.txt\0";
+        let files = parse_status(status, "", &root()).unwrap();
+        let columns: Vec<(Option<Change>, Option<Change>)> = files
+            .iter()
+            .map(|file| (file.staged, file.unstaged))
+            .collect();
+        assert_eq!(
+            columns,
+            vec![
+                (Some(Change::Modified), Some(Change::Modified)),
+                (Some(Change::Added), None),
+                (Some(Change::Deleted), None),
+                (None, Some(Change::Deleted)),
+                (None, Some(Change::Added)),
+            ]
+        );
+        assert!(files[4].is_untracked());
+        assert!(!files[1].is_untracked());
     }
 
     #[test]
@@ -492,11 +629,15 @@ mod tests {
                     path: root().join("a.rs"),
                     change: Change::Modified,
                     from: None,
+                    staged: None,
+                    unstaged: None,
                 },
                 ChangedFile {
                     path: root().join("to.rs"),
                     change: Change::Renamed,
                     from: Some("sub/from.rs".into()),
+                    staged: None,
+                    unstaged: None,
                 },
             ]
         );

@@ -420,6 +420,7 @@ impl MappableCommand {
         file_explorer_in_current_directory, "Open file explorer at current working directory",
         sidebar_focus, "Focus the sidebar, opening it if closed",
         sidebar_toggle, "Show or hide the sidebar",
+        sidebar_reveal, "Reveal the current file in the sidebar's tree, focused",
         markdown_preview_toggle, "Show or hide the Markdown preview beside the file",
         markdown_preview_full, "Show or hide the Markdown preview on its own, filling the screen",
         quit_saving, "Save every file that has one and quit, asking about what cannot be saved",
@@ -773,11 +774,16 @@ type MoveFn =
 /// this is the FIRST one, which starts from the caret: what normal mode had selected is
 /// not what is being extended here.
 pub(crate) fn mark_insert_selection(editor: &mut Editor) -> bool {
-    if editor.mode != Mode::Insert || editor.insert_selection {
+    if editor.mode != Mode::Insert {
         return false;
     }
 
-    editor.insert_selection = true;
+    let view = view_mut!(editor);
+    if view.insert_selection {
+        return false;
+    }
+
+    view.insert_selection = true;
 
     true
 }
@@ -2311,7 +2317,6 @@ fn copy_selection_on_next_line(cx: &mut Context) {
 
 fn select_all(cx: &mut Context) {
     mark_insert_selection(cx.editor);
-    cx.editor.insert_selection = cx.editor.mode == Mode::Insert;
 
     let (view, doc) = current!(cx.editor);
 
@@ -4094,7 +4099,7 @@ fn ensure_selections_forward(cx: &mut Context) {
 
 fn enter_insert_mode(cx: &mut Context) {
     // Whatever was selected in normal mode is not a selection typing replaces.
-    cx.editor.insert_selection = false;
+    view_mut!(cx.editor).insert_selection = false;
     cx.editor.mode = Mode::Insert;
 }
 
@@ -4254,6 +4259,13 @@ fn sidebar_focus(_cx: &mut Context) {
     job::dispatch_blocking(|editor, compositor| {
         let editor_view = compositor.find::<ui::EditorView>().unwrap();
         editor_view.sidebar.focus(editor);
+    });
+}
+
+fn sidebar_reveal(_cx: &mut Context) {
+    job::dispatch_blocking(|editor, compositor| {
+        let editor_view = compositor.find::<ui::EditorView>().unwrap();
+        editor_view.sidebar.reveal(editor);
     });
 }
 
@@ -5556,17 +5568,17 @@ pub mod insert {
         // Nothing is selected any more. Saying so matters: what a deletion leaves behind
         // is grown back to one grapheme — the one to the RIGHT of the cursor — and the
         // next Backspace would take that instead of the character before it.
-        cx.editor.insert_selection = false;
+        view_mut!(cx.editor).insert_selection = false;
     }
 
     /// Whether something was selected while typing, so a key that would delete one
     /// character deletes that instead.
     fn something_selected(cx: &Context) -> bool {
-        if !cx.editor.insert_selection {
+        let (view, doc) = current_ref!(cx.editor);
+        if !view.insert_selection {
             return false;
         }
 
-        let (view, doc) = current_ref!(cx.editor);
         !doc.selection(view.id).ranges().iter().all(Range::is_empty)
     }
 
@@ -6087,7 +6099,7 @@ fn nothing_selected(editor: &Editor) -> bool {
         .all(|range| range.anchor == range.head);
 
     if editor.mode == Mode::Insert {
-        return !editor.insert_selection || empty;
+        return !view.insert_selection || empty;
     }
 
     empty

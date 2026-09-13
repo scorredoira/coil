@@ -21,10 +21,61 @@ fn with_shortcuts() -> AppBuilder {
         keymap!({"Insert mode"
             "C-a" => select_all,
             "S-right" => extend_char_right,
+            "F10" => command_mode,
         }),
     );
 
     AppBuilder::new().with_config(config)
+}
+
+/// The editor as installed: it opens in insert mode and a buffer switch leaves it there.
+fn typing_by_default() -> AppBuilder {
+    let mut config = helpers::test_config();
+    config.editor.default_mode = Mode::Insert;
+    config.keys.insert(
+        Mode::Insert,
+        keymap!({"Insert mode"
+            "S-right" => extend_char_right,
+            "F10" => command_mode,
+        }),
+    );
+
+    AppBuilder::new().with_config(config)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_selection_made_while_typing_stays_in_its_buffer() -> anyhow::Result<()> {
+    let mut app = typing_by_default().with_input_text("#[a|]#bcd").build()?;
+
+    // A second buffer with a line selected the normal way, then back to the first one
+    // to select while typing, then to the second again, still typing. What is typed
+    // there lands beside its selection: the selection typing replaces was the first
+    // buffer's, never this one's.
+    test_key_sequences(
+        &mut app,
+        vec![(
+            Some("<F10>new<ret>hello<esc>x:bp<ret>i<S-right><S-right><F10>bn<ret>Z"),
+            Some(&|app| {
+                let text = helix_view::doc!(app.editor).text().to_string();
+                assert_eq!("helloZ\n", text);
+            }),
+        )],
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_selection_made_while_typing_is_replaced_by_typing() -> anyhow::Result<()> {
+    test_with_config(
+        typing_by_default(),
+        ("#[a|]#bcd", "<S-right><S-right>X", "X#[c|]#d"),
+    )
+    .await?;
+
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -208,11 +259,24 @@ async fn leaving_a_file_saves_it() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn quitting_writes_every_file_first() -> anyhow::Result<()> {
+async fn quitting_writes_every_file_after_confirmation() -> anyhow::Result<()> {
     let mut file = tempfile::NamedTempFile::new()?;
     let mut app = with_shortcuts().with_file(file.path(), None).build()?;
 
-    test_key_sequence(&mut app, Some("ihello<esc><C-q>"), None, true).await?;
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                Some("ihello<esc><C-q>"),
+                Some(&|_| {
+                    assert_eq!(std::fs::read_to_string(file.path()).unwrap(), "");
+                }),
+            ),
+            (Some("<ret>"), None),
+        ],
+        true,
+    )
+    .await?;
 
     helpers::assert_file_has_content(&mut file, &LineFeedHandling::Native.apply("hello\n"))?;
 

@@ -4,12 +4,40 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 
-/// The files a project had open, in the order their tabs were in.
-#[derive(Default, serde::Serialize, serde::Deserialize)]
+/// The files a project had open, in the order their tabs were in, and how the screen was
+/// split between them.
+#[derive(Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Session {
     pub files: Vec<PathBuf>,
     /// The one that was in front.
     pub focused: Option<PathBuf>,
+    /// The splits, down to a file and a cursor in each; none when nothing with a file was
+    /// on screen.
+    pub layout: Option<Pane>,
+}
+
+/// A split and what it holds, or one view: a file and where the cursor was in it. Untagged,
+/// so the file reads as `{ file = "a.rs", line = 3, column = 0 }` and a split as
+/// `{ split = "vertical", panes = [...] }`.
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum Pane {
+    Split {
+        split: Split,
+        panes: Vec<Pane>,
+    },
+    View {
+        file: PathBuf,
+        line: usize,
+        column: usize,
+    },
+}
+
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Split {
+    Vertical,
+    Horizontal,
 }
 
 fn sessions_dir() -> PathBuf {
@@ -69,6 +97,44 @@ pub fn save(workspace: &Path, session: &Session) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_session_with_splits_reads_back_as_written() {
+        let session = Session {
+            files: vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")],
+            focused: Some(PathBuf::from("b.rs")),
+            layout: Some(Pane::Split {
+                split: Split::Vertical,
+                panes: vec![
+                    Pane::View {
+                        file: PathBuf::from("a.rs"),
+                        line: 3,
+                        column: 1,
+                    },
+                    Pane::Split {
+                        split: Split::Horizontal,
+                        panes: vec![
+                            Pane::View {
+                                file: PathBuf::from("b.rs"),
+                                line: 0,
+                                column: 0,
+                            },
+                            Pane::View {
+                                file: PathBuf::from("a.rs"),
+                                line: 9,
+                                column: 4,
+                            },
+                        ],
+                    },
+                ],
+            }),
+        };
+
+        let text = toml::to_string(&session).unwrap();
+        let back: Session = toml::from_str(&text).unwrap();
+
+        assert!(back == session);
+    }
 
     #[test]
     fn two_projects_called_the_same_are_two_sessions() {

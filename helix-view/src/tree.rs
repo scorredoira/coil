@@ -851,6 +851,32 @@ impl Tree {
     pub fn area(&self) -> Rect {
         self.area
     }
+
+    /// The splits down to the views, in the order they sit in: what a session writes down.
+    pub fn panes(&self) -> Pane {
+        self.pane_of(self.root)
+    }
+
+    fn pane_of(&self, id: ViewId) -> Pane {
+        match &self.nodes[id].content {
+            Content::View(_) => Pane::View(id),
+            Content::Container(container) => {
+                let panes = container
+                    .children
+                    .iter()
+                    .map(|child| self.pane_of(*child))
+                    .collect();
+                Pane::Split(container.layout, panes)
+            }
+        }
+    }
+}
+
+/// A view, or a container's layout and what it holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pane {
+    View(ViewId),
+    Split(Layout, Vec<Pane>),
 }
 
 #[derive(Debug)]
@@ -1230,6 +1256,30 @@ mod test {
         tree.focus = right;
         split_view(&mut tree, Layout::Vertical);
         assert_eq!(widths(&tree), vec![59, 19, 20]);
+    }
+
+    #[test]
+    fn the_panes_say_how_the_views_are_split() {
+        let mut tree = tree_with_views(90, 24);
+        let first = tree.focus;
+        let right = split_view(&mut tree, Layout::Vertical);
+        let below = split_view(&mut tree, Layout::Horizontal);
+
+        let panes = tree.panes();
+
+        assert_eq!(
+            panes,
+            Pane::Split(
+                Layout::Vertical,
+                vec![
+                    Pane::View(first),
+                    Pane::Split(
+                        Layout::Horizontal,
+                        vec![Pane::View(right), Pane::View(below)]
+                    ),
+                ]
+            )
+        );
     }
 
     #[test]

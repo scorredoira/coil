@@ -32,6 +32,9 @@ struct RenderInfo {
 pub struct Popup<T: Component> {
     contents: T,
     position: Option<Position>,
+    /// The position was given and is kept: a popup opened at the pointer does not
+    /// follow the caret.
+    pinned: bool,
     area: Rect,
     position_bias: Open,
     scroll_half_pages: usize,
@@ -46,6 +49,7 @@ impl<T: Component> Popup<T> {
         Self {
             contents,
             position: None,
+            pinned: false,
             position_bias: Open::Below,
             area: Rect::new(0, 0, 0, 0),
             scroll_half_pages: 0,
@@ -62,6 +66,13 @@ impl<T: Component> Popup<T> {
     /// but rather the screen-space position of the information to which the popup refers.
     pub fn position(mut self, pos: Option<Position>) -> Self {
         self.position = pos;
+        self
+    }
+
+    /// Pins the popup beside a screen position instead of the caret.
+    pub fn pinned(mut self, at: Position) -> Self {
+        self.position = Some(at);
+        self.pinned = true;
         self
     }
 
@@ -124,15 +135,14 @@ impl<T: Component> Popup<T> {
     }
 
     fn render_info(&mut self, viewport: Rect, editor: &Editor) -> RenderInfo {
-        let mut position = editor.cursor().0.unwrap_or_default();
-        if let Some(old_position) = self
-            .position
-            .filter(|old_position| old_position.row == position.row)
-        {
-            position = old_position;
-        } else {
-            self.position = Some(position);
-        }
+        let cursor = editor.cursor().0.unwrap_or_default();
+        let position = match self.position {
+            Some(at) if self.pinned || at.row == cursor.row => at,
+            _ => {
+                self.position = Some(cursor);
+                cursor
+            }
+        };
 
         let is_menu = self
             .contents

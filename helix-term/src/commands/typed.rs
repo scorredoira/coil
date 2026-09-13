@@ -257,6 +257,7 @@ fn buffer_close(
     }
 
     // Closing the buffer on screen asks about its changes, the way closing them all does.
+    cx.block_try_flush_writes()?;
     let doc = doc!(cx.editor);
     if args.is_empty() && doc.is_modified() {
         ask_about_closing(

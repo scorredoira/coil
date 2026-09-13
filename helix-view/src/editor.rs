@@ -1369,9 +1369,6 @@ pub struct Editor {
     /// times during rendering and should not be set by other functions.
     pub handlers: Handlers,
 
-    /// Whether what is selected was selected WHILE typing: then typing over it replaces
-    /// it, as any editor does. The selection insert mode was entered with is not that.
-    pub insert_selection: bool,
     pub mouse_down_range: Option<Range>,
     pub cursor_cache: CursorCache,
     pub workspace_trust: WorkspaceTrust,
@@ -1459,7 +1456,6 @@ impl Editor {
 
         Self {
             mode: conf.default_mode,
-            insert_selection: false,
             tree: Tree::new(area),
             next_document_id: DocumentId::default(),
             documents: BTreeMap::new(),
@@ -1958,6 +1954,8 @@ impl Editor {
         let view = self.tree.get_mut(current_view);
 
         view.doc = doc_id;
+        // Whatever was selected while typing was selected in the document being left.
+        view.insert_selection = false;
         let doc = doc_mut!(self, &doc_id);
 
         doc.ensure_view_init(view.id);

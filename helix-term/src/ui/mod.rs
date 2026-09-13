@@ -382,21 +382,18 @@ pub(crate) fn directory_entries(
     editor: &Editor,
     helix_ignore_files: bool,
 ) -> Result<Vec<(PathBuf, bool)>, std::io::Error> {
-    use ignore::WalkBuilder;
+    let config = editor.config().file_explorer.clone();
+    directory_entries_with(root, &config, helix_ignore_files)
+}
 
-    let config = editor.config();
-
-    let mut walk_builder = WalkBuilder::new(root);
-    walk_builder
-        .hidden(config.file_explorer.hidden)
-        .parents(config.file_explorer.parents)
-        .ignore(config.file_explorer.ignore)
-        .follow_links(config.file_explorer.follow_symlinks)
-        .git_ignore(config.file_explorer.git_ignore)
-        .git_global(config.file_explorer.git_global)
-        .git_exclude(config.file_explorer.git_exclude)
-        .max_depth(Some(1))
-        .types(get_excluded_types());
+/// The same listing from a copy of the config, for a thread that has no editor to ask.
+pub(crate) fn directory_entries_with(
+    root: &Path,
+    config: &helix_view::editor::FileExplorerConfig,
+    helix_ignore_files: bool,
+) -> Result<Vec<(PathBuf, bool)>, std::io::Error> {
+    let mut walk_builder = explorer_walker(root, config);
+    walk_builder.max_depth(Some(1));
     if helix_ignore_files {
         walk_builder
             .add_custom_ignore_filename(helix_loader::config_dir().join("ignore"))
@@ -411,7 +408,7 @@ pub(crate) fn directory_entries(
                     let path = entry.path();
                     let is_dir = path.is_dir();
                     let mut path = path.to_path_buf();
-                    if is_dir && path != root && config.file_explorer.flatten_dirs {
+                    if is_dir && path != root && config.flatten_dirs {
                         while let Some(single_child_directory) = get_child_if_single_dir(&path) {
                             path = single_child_directory;
                         }
@@ -430,6 +427,25 @@ pub(crate) fn directory_entries(
     }
 
     Ok(content)
+}
+
+/// A walk of `root` under the explorer's rules: what is hidden or ignored stays out, so
+/// every listing of the workspace agrees on what is in it.
+pub(crate) fn explorer_walker(
+    root: &Path,
+    config: &helix_view::editor::FileExplorerConfig,
+) -> ignore::WalkBuilder {
+    let mut walk_builder = ignore::WalkBuilder::new(root);
+    walk_builder
+        .hidden(config.hidden)
+        .parents(config.parents)
+        .ignore(config.ignore)
+        .follow_links(config.follow_symlinks)
+        .git_ignore(config.git_ignore)
+        .git_global(config.git_global)
+        .git_exclude(config.git_exclude)
+        .types(get_excluded_types());
+    walk_builder
 }
 
 fn get_child_if_single_dir(path: &Path) -> Option<PathBuf> {
