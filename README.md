@@ -301,7 +301,34 @@ To bring your configuration along: `cp -r ~/.config/helix ~/.config/coil`.
 
 ## Installing
 
-Coil is built from source. It needs [Rust](https://rustup.rs), git and a C
+Download the [latest release](https://github.com/scorredoira/coil/releases/latest)
+for Linux x86_64/ARM64 or macOS Intel/Apple Silicon, or let the installer select it:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/scorredoira/coil/master/fork/install.sh -o /tmp/install-coil.sh
+sh /tmp/install-coil.sh
+export PATH="$HOME/.local/bin:$PATH"
+coil
+```
+
+This installs the complete package under `~/.local`, verifies the archive's
+SHA-256 checksum and preserves your configuration. Repeat to update. No Rust,
+Homebrew or compiler is needed on the destination machine. Add the PATH line to
+`~/.zshrc` on macOS or your shell profile on Linux. Language servers and formatters
+are installed separately; `coil --health` shows which are available.
+
+For servers, the Linux `.run` asset is a single transferable file: rename it
+`coil`, run `chmod +x coil`, and copy it to a directory on PATH. It includes the
+same runtime, extracted to a user cache on first use, with no FUSE requirement.
+Linux builds require glibc 2.35+ (Ubuntu 22.04+, Debian 12+); macOS builds require
+macOS 14+. Choose the asset matching the machine's architecture.
+
+To use it as your default editor, set `EDITOR=coil` and `VISUAL=coil`. An optional
+`alias vim=coil` affects interactive use; Coil does not emulate Vim's CLI.
+
+### Building from source
+
+Building needs [Rust](https://rustup.rs), git and a C
 compiler, which builds the tree-sitter grammars (on macOS,
 `xcode-select --install`).
 
