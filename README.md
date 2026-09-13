@@ -105,16 +105,14 @@ or use `F6` / `F7` to show or hide commits / code.
 
 ![The history in the sidebar, the diff of the selected commit on the right](fork/screenshots/commits.png)
 
-`file_history` in the command palette (`Ctrl-Shift-p`) narrows the history to
-the current file, following renames.
+`Ctrl-Alt-l` narrows the history to the current file, following renames.
 
 ![The history of one file](fork/screenshots/history.png)
 
 ## Who changed this line
 
-`blame_line` in the command palette (`Ctrl-Shift-p`) says who last changed the
-line under the cursor, when, and in which commit; run it again to open that
-commit in the sidebar.
+`Ctrl-Alt-b` says who last changed the line under the cursor, when, and in
+which commit; press it again to open that commit in the sidebar.
 
 ![Who changed the line under the cursor, in the status line](fork/screenshots/blame.png)
 
@@ -226,6 +224,7 @@ So the keys are the ones you already know:
 | `F1` | Searchable keyboard shortcut reference (including sidebar controls) |
 | `F4` | Commit diff: full file context / changed sections |
 | `F6` / `F7` | Show or hide the commits / code panel |
+| `Ctrl-Alt-b` / `Ctrl-Alt-l` | Who changed this line / this file's history |
 | `Ctrl-f` / `F3` / `Shift-F3` | Search in this file / next match / previous |
 | `Ctrl-Shift-f` | Search and replace across the project |
 | `Ctrl-g` | Go to a line |
