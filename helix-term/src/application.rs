@@ -347,7 +347,30 @@ impl Application {
                     };
                 }
                 Some(event) = input_stream.next() => {
-                    self.handle_terminal_events(event).await;
+                    // The pointer motion the terminal has already sent is handled before
+                    // anything is drawn: a wheel gesture is dozens of events, and a frame
+                    // per event is what keeps the scroll going after the hand has stopped.
+                    // A key or a click still gets a frame of its own, so a sequence a tool
+                    // types lands on what each key put on screen.
+                    let mut redraw = self.handle_terminal_event(event);
+                    let mut taken = 0;
+                    while taken < COALESCED_EVENTS && !self.editor.should_close() {
+                        let Some(event) = next_ready(input_stream).await else {
+                            break;
+                        };
+                        if !is_pointer_motion(&event) {
+                            if redraw {
+                                self.render().await;
+                            }
+                            redraw = self.handle_terminal_event(event);
+                            break;
+                        }
+                        redraw |= self.handle_terminal_event(event);
+                        taken += 1;
+                    }
+                    if redraw && !self.editor.should_close() {
+                        self.render().await;
+                    }
                 }
                 Some(callback) = self.jobs.callbacks.recv() => {
                     if let Some(job) = self.jobs.handle_callback(&mut self.editor, &mut self.compositor, Ok(Some(callback))) {
@@ -720,7 +743,8 @@ impl Application {
         false
     }
 
-    pub async fn handle_terminal_events(&mut self, event: std::io::Result<TerminalEvent>) {
+    /// Handles one event and says whether the screen needs drawing; the caller draws.
+    pub fn handle_terminal_event(&mut self, event: std::io::Result<TerminalEvent>) -> bool {
         #[cfg(not(windows))]
         use termina::escape::csi;
 
@@ -797,9 +821,7 @@ impl Application {
             event => self.compositor.handle_event(&event.into(), &mut cx),
         };
 
-        if should_redraw && !self.editor.should_close() {
-            self.render().await;
-        }
+        should_redraw
     }
 
     pub async fn handle_language_server_message(
@@ -1470,6 +1492,108 @@ impl Application {
             log::error!("Could not remember what this project had open: {err:#}");
         }
     }
+}
+
+/// How many events already waiting are handled before a frame is drawn.
+const COALESCED_EVENTS: usize = 64;
+
+/// Poll once without waiting, retaining the event loop's waker. `now_or_never`
+/// installs a noop waker; the terminal reader can keep it until input arrives,
+/// leaving that input asleep until an unrelated timer wakes the event loop.
+async fn next_ready<S: Stream + Unpin>(stream: &mut S) -> Option<S::Item> {
+    use futures_util::{future::poll_fn, StreamExt};
+    use std::task::Poll;
+
+    poll_fn(|cx| {
+        let ready = match stream.poll_next_unpin(cx) {
+            Poll::Ready(item) => item,
+            Poll::Pending => None,
+        };
+        Poll::Ready(ready)
+    })
+    .await
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::next_ready;
+    use futures_util::{stream, task::ArcWake, FutureExt};
+    use std::{
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+        task::{Context, Poll},
+    };
+
+    #[test]
+    fn draining_input_keeps_the_event_loop_awake_for_the_next_event() {
+        struct WakeCount(AtomicUsize);
+        impl ArcWake for WakeCount {
+            fn wake_by_ref(this: &Arc<Self>) {
+                this.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let wakes = Arc::new(WakeCount(AtomicUsize::new(0)));
+        let waker = futures_util::task::waker(wakes.clone());
+        let mut cx = Context::from_waker(&waker);
+        let mut reader_waker = None;
+        let mut input = stream::poll_fn(|cx| {
+            reader_waker = Some(cx.waker().clone());
+            Poll::<Option<()>>::Pending
+        });
+
+        // The drain must finish immediately, while leaving a working notification
+        // for the terminal's background reader when the next event arrives.
+        {
+            let drain = next_ready(&mut input);
+            let mut drain = std::pin::pin!(drain);
+            assert_eq!(drain.poll_unpin(&mut cx), Poll::Ready(None));
+        }
+        drop(input);
+        reader_waker.unwrap().wake();
+        assert_eq!(wakes.0.load(Ordering::SeqCst), 1);
+    }
+}
+
+/// The wheel, a drag or the pointer moving: what may share a frame with the events before it.
+#[cfg(not(windows))]
+fn is_pointer_motion(event: &std::io::Result<TerminalEvent>) -> bool {
+    use termina::event::MouseEventKind;
+
+    matches!(
+        event,
+        Ok(termina::Event::Mouse(termina::event::MouseEvent {
+            kind: MouseEventKind::Moved
+                | MouseEventKind::Drag(_)
+                | MouseEventKind::ScrollUp
+                | MouseEventKind::ScrollDown
+                | MouseEventKind::ScrollLeft
+                | MouseEventKind::ScrollRight,
+            ..
+        }))
+    )
+}
+
+#[cfg(windows)]
+fn is_pointer_motion(event: &std::io::Result<TerminalEvent>) -> bool {
+    use crossterm::event::MouseEventKind;
+
+    matches!(
+        event,
+        Ok(crossterm::event::Event::Mouse(
+            crossterm::event::MouseEvent {
+                kind: MouseEventKind::Moved
+                    | MouseEventKind::Drag(_)
+                    | MouseEventKind::ScrollUp
+                    | MouseEventKind::ScrollDown
+                    | MouseEventKind::ScrollLeft
+                    | MouseEventKind::ScrollRight,
+                ..
+            }
+        ))
+    )
 }
 
 impl ui::menu::Item for lsp::MessageActionItem {
