@@ -10,7 +10,7 @@
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
-use helix_view::editor::Action;
+use helix_view::editor::{Action, FileExplorerConfig};
 use helix_view::Editor;
 
 use super::entries::{self, Folds, Listed, Listings, Row};
@@ -45,6 +45,11 @@ pub struct FilesTab {
     walk: Option<entries::Walk>,
     /// The folds as they were when the box opened, put back when it closes.
     folds_before: Option<Folds>,
+    /// Whether files that start with a dot are left out: the configuration's, taken when
+    /// the tree first reads the disk and changed with it.
+    hidden: Option<bool>,
+    /// Counts the times `hidden` changed, so a read made the other way is dropped.
+    epoch: u32,
 }
 
 struct Pending {
@@ -69,7 +74,55 @@ impl FilesTab {
             filter: None,
             walk: None,
             folds_before: None,
+            hidden: None,
+            epoch: 0,
         }
+    }
+
+    /// Whether files that start with a dot are left out of the tree.
+    pub fn hidden(&mut self, editor: &Editor) -> bool {
+        *self
+            .hidden
+            .get_or_insert(editor.config().file_explorer.hidden)
+    }
+
+    /// Leaves files that start with a dot out of the tree, or brings them back: what is
+    /// on screen is read again, and the rows stay as they are until it lands.
+    pub fn set_hidden(&mut self, editor: &mut Editor, hidden: bool) {
+        if self.hidden(editor) == hidden {
+            return;
+        }
+        self.hidden = Some(hidden);
+        self.epoch = self.epoch.wrapping_add(1);
+        self.asking.clear();
+        if self.filter.is_some() {
+            self.walk_workspace(editor);
+        }
+        let on_screen = self.dirs_on_screen();
+        self.listings.retain(|dir, _| on_screen.contains(dir));
+        self.ask(editor, on_screen);
+    }
+
+    /// The explorer's configuration, with the tree's own word on files that start with a dot.
+    fn explorer_config(&mut self, editor: &Editor) -> FileExplorerConfig {
+        let mut config = editor.config().file_explorer.clone();
+        config.hidden = self.hidden(editor);
+        config
+    }
+
+    /// Reads the whole workspace for the filter box, off the main thread.
+    fn walk_workspace(&mut self, editor: &Editor) {
+        let root = self.root.clone();
+        let config = self.explorer_config(editor);
+        let epoch = self.epoch;
+        super::background(
+            move || entries::walk_workspace(&root, &config),
+            move |sidebar, editor, walk| {
+                if sidebar.files.epoch == epoch {
+                    sidebar.files.walk_landed(editor, walk);
+                }
+            },
+        );
     }
 
     pub fn filter(&self) -> Option<&str> {
@@ -83,12 +136,7 @@ impl FilesTab {
         let closing = text.is_none() && self.filter.is_some();
         if opening {
             self.folds_before = Some(self.folds.clone());
-            let root = self.root.clone();
-            let config = editor.config().file_explorer.clone();
-            super::background(
-                move || entries::walk_workspace(&root, &config),
-                |sidebar, editor, walk| sidebar.files.walk_landed(editor, walk),
-            );
+            self.walk_workspace(editor);
         }
         if closing {
             if let Some(folds) = self.folds_before.take() {
@@ -151,14 +199,19 @@ impl FilesTab {
         if dirs.is_empty() {
             return;
         }
-        let config = editor.config().file_explorer.clone();
+        let config = self.explorer_config(editor);
+        let epoch = self.epoch;
         super::background(
             move || {
                 dirs.iter()
                     .map(|dir| entries::list_dir(dir, &config))
                     .collect::<Vec<Listed>>()
             },
-            |sidebar, editor, listed| sidebar.files.landed(editor, listed),
+            move |sidebar, editor, listed| {
+                if sidebar.files.epoch == epoch {
+                    sidebar.files.landed(editor, listed);
+                }
+            },
         );
     }
 
@@ -226,12 +279,18 @@ impl FilesTab {
     /// Looks at the open directories off the main thread and reads again the ones that
     /// moved; a read already under way is left to land first.
     fn poll(&mut self, editor: &mut Editor) {
+        // The configuration changed some other way, by hand or on the settings screen.
+        let configured = editor.config().file_explorer.hidden;
+        if self.hidden.is_some_and(|hidden| hidden != configured) {
+            self.set_hidden(editor, configured);
+        }
         if self.polling || !self.asking.is_empty() {
             self.watch();
             return;
         }
         self.polling = true;
-        let config = editor.config().file_explorer.clone();
+        let config = self.explorer_config(editor);
+        let epoch = self.epoch;
         let watched: Vec<(PathBuf, entries::Listing)> = self
             .dirs_on_screen()
             .into_iter()
@@ -248,9 +307,9 @@ impl FilesTab {
                     .map(|(dir, _)| entries::list_dir(dir, &config))
                     .collect::<Vec<Listed>>()
             },
-            |sidebar, editor, listed| {
+            move |sidebar, editor, listed| {
                 sidebar.files.polling = false;
-                if !listed.is_empty() {
+                if !listed.is_empty() && sidebar.files.epoch == epoch {
                     sidebar.files.landed(editor, listed);
                 }
                 if sidebar.showing(TabKind::Files) {

@@ -92,6 +92,11 @@ const SETTINGS: &[Setting] = &[
         kind: Kind::Switch,
     },
     Setting {
+        label: "The file tree hides files that start with a dot",
+        key: "file-explorer.hidden",
+        kind: Kind::Switch,
+    },
+    Setting {
         label: "The mouse",
         key: "mouse",
         kind: Kind::Switch,
@@ -185,7 +190,7 @@ fn read(editor: &Editor, key: &str) -> Value {
 }
 
 /// Puts the new value in the running editor, which redraws with it at once.
-fn apply(editor: &mut Editor, key: &str, value: &Value) -> anyhow::Result<()> {
+pub(crate) fn apply(editor: &mut Editor, key: &str, value: &Value) -> anyhow::Result<()> {
     let mut config = serde_json::json!(&*editor.config());
     let pointer = format!("/{}", key.replace('.', "/"));
     let at = config
@@ -205,7 +210,7 @@ fn apply(editor: &mut Editor, key: &str, value: &Value) -> anyhow::Result<()> {
 
 /// Writes one setting into the user's `config.toml`, leaving every other line of it —
 /// its comments and its order included — exactly as it was.
-fn write_setting(path: &Path, key: &str, value: &Value) -> anyhow::Result<()> {
+pub(crate) fn write_setting(path: &Path, key: &str, value: &Value) -> anyhow::Result<()> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),

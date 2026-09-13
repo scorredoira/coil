@@ -420,6 +420,7 @@ impl MappableCommand {
         file_explorer_in_current_directory, "Open file explorer at current working directory",
         sidebar_focus, "Focus the sidebar, opening it if closed",
         sidebar_toggle, "Show or hide the sidebar",
+        toggle_hidden_files, "Show or hide hidden files in the file tree",
         review_commits_toggle, "Show or hide the commits panel",
         review_code_toggle, "Show or hide the code panel while reviewing commits",
         review_context_toggle, "Toggle full file context in the current commit diff",
@@ -4427,6 +4428,13 @@ fn markdown_preview_full(_cx: &mut Context) {
     job::dispatch_blocking(|editor, compositor| {
         let editor_view = compositor.find::<ui::EditorView>().unwrap();
         editor_view.markdown_preview.toggle_full(editor);
+    });
+}
+
+fn toggle_hidden_files(_cx: &mut Context) {
+    job::dispatch_blocking(|editor, compositor| {
+        let editor_view = compositor.find::<ui::EditorView>().unwrap();
+        editor_view.sidebar.toggle_hidden(editor);
     });
 }
 

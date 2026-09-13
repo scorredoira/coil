@@ -29,9 +29,9 @@ use tui::buffer::Buffer as Surface;
 
 use crate::commands;
 use crate::compositor::EventResult;
-use crate::ui::context_menu;
 use crate::ui::editor;
 use crate::ui::panel_width;
+use crate::ui::{context_menu, settings};
 
 use changes::{Act, ChangesTab};
 use commit_layout::CommitLayout;
@@ -127,6 +127,28 @@ fn is_editor_shortcut(key: KeyEvent) -> bool {
 }
 
 impl Sidebar {
+    /// Shows the files that start with a dot in the tree, or hides them, and writes the
+    /// choice to `config.toml` as the settings screen would.
+    pub fn toggle_hidden(&mut self, editor: &mut Editor) {
+        let hidden = !self.files.hidden(editor);
+        self.files.set_hidden(editor, hidden);
+        let key = "file-explorer.hidden";
+        let value = serde_json::Value::Bool(hidden);
+        if let Err(err) = settings::apply(editor, key, &value) {
+            log::error!("Could not change '{key}': {err:#}");
+        }
+        if let Err(err) = settings::write_setting(&helix_loader::config_file(), key, &value) {
+            log::error!("Could not write '{key}' to config.toml: {err:#}");
+            editor.set_error(format!("Changed, but not written down: {err:#}"));
+            return;
+        }
+        editor.set_status(if hidden {
+            "Hidden files are hidden"
+        } else {
+            "Hidden files are shown"
+        });
+    }
+
     pub fn new(root: PathBuf, open: bool) -> Self {
         // A broken file costs the remembered width, not the sidebar.
         let (width, width_error) = match panel_width::load(WIDTH_FILE) {
@@ -586,6 +608,9 @@ impl Sidebar {
                 let target = self.prompt_target();
                 files::prompt_delete(cx, target);
             }
+            (KeyCode::Char('h'), KeyModifiers::CONTROL) if self.tab == TabKind::Files => {
+                self.toggle_hidden(editor);
+            }
             // Anything the sidebar does not use but the editor might: it goes through, so
             // Ctrl-q quits and Ctrl-s saves wherever the focus is.
             _ if is_editor_shortcut(key) => return EventResult::Ignored(None),
@@ -744,7 +769,8 @@ impl Sidebar {
                     }
                 }
 
-                return open_menu(event.row, event.column, self.prompt_target());
+                let hidden = self.files.hidden(editor);
+                return open_menu(event.row, event.column, self.prompt_target(), hidden);
             }
             MouseEventKind::Down(MouseButton::Right) if self.tab == TabKind::Changes => {
                 self.focused = true;
@@ -1044,7 +1070,7 @@ pub(crate) fn later(
 
 /// What can be done to the row the pointer is on. Every one of them has a key as well —
 /// the menu is the other way in, never the only one.
-fn open_menu(row: u16, column: u16, target: PromptTarget) -> EventResult {
+fn open_menu(row: u16, column: u16, target: PromptTarget, hidden: bool) -> EventResult {
     EventResult::Consumed(Some(Box::new(move |compositor, _cx| {
         let for_new = target.clone();
         let for_rename = target.clone();
@@ -1075,6 +1101,19 @@ fn open_menu(row: u16, column: u16, target: PromptTarget) -> EventResult {
                     context_menu::with_context(compositor, cx, |cx| {
                         files::prompt_delete(cx, for_delete)
                     })
+                }),
+            ),
+            context_menu::Entry::new(
+                if hidden {
+                    "Show hidden files"
+                } else {
+                    "Hide hidden files"
+                },
+                "Ctrl-h",
+                Box::new(|compositor, cx| {
+                    if let Some(view) = compositor.find::<editor::EditorView>() {
+                        view.sidebar.toggle_hidden(cx.editor);
+                    }
                 }),
             ),
             context_menu::Entry::new(

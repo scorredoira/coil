@@ -163,6 +163,7 @@ impl Shortcuts {
             ),
             ("Files", "Ctrl+n", "Create a file or directory"),
             ("Files", "F2", "Rename the selected file or directory"),
+            ("Files", "Ctrl+h", "Show or hide hidden files"),
             (
                 "Files",
                 "Delete",
