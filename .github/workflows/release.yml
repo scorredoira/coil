@@ -21,8 +21,6 @@ jobs:
             os: ubuntu-22.04
           - platform: aarch64-linux
             os: ubuntu-22.04-arm
-          - platform: x86_64-macos
-            os: macos-15-intel
           - platform: aarch64-macos
             os: macos-14
     runs-on: ${{ matrix.os }}

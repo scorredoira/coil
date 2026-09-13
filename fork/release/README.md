@@ -48,7 +48,8 @@ Themes, queries and compiled syntax grammars are included. Language servers
 and formatters are separate: `coil --health` lists what your machine has.
 Git history requires the `git` command. Linux packages require glibc 2.35+
 (e.g. Ubuntu 22.04+, Debian 12+); Alpine/musl is not supported by these builds.
-macOS builds target macOS 14 or later, for Intel or Apple Silicon respectively.
+macOS builds target macOS 14 or later on Apple Silicon. Mac Intel binaries are
+not built for new releases.
 
 The Linux `.run` is a single portable file. `chmod +x` it, rename it `coil`
 and run it. It needs standard shell utilities, tar, gzip and sha256sum; no

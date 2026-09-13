@@ -302,7 +302,7 @@ To bring your configuration along: `cp -r ~/.config/helix ~/.config/coil`.
 ## Installing
 
 Download the [latest release](https://github.com/scorredoira/coil/releases/latest)
-for Linux x86_64/ARM64 or macOS Intel/Apple Silicon, or let the installer select it:
+for Linux x86_64/ARM64 or macOS Apple Silicon, or let the installer select it:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/scorredoira/coil/master/fork/install.sh -o /tmp/install-coil.sh
@@ -326,7 +326,7 @@ For bash on Linux, use `~/.bashrc` instead:
 printf '\nexport PATH="$HOME/.local/bin:$PATH"\n' >> ~/.bashrc
 ```
 
- Language servers and formatters
+Language servers and formatters
 are installed separately; `coil --health` shows which are available.
 
 For servers, the Linux `.run` asset is a single transferable file: rename it
