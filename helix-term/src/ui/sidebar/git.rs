@@ -93,6 +93,9 @@ pub struct Commit {
     pub short: String,
     /// The committer's date, which a rebase renews, so ages read in the list's order.
     pub time: i64,
+    /// The committer's date as the committer's clock read it: `2026-09-13 16:36`.
+    pub date: String,
+    pub author: String,
     pub subject: String,
     /// The file the commit was reached by (a file's history, a blame), relative to the
     /// repository's top and named as it was in that commit.
@@ -169,7 +172,7 @@ pub fn file_log(root: &Path, path: &Path) -> Answer<Vec<Commit>> {
 }
 
 const LOG: &str = "log";
-const LOG_FORMAT: &str = "--format=%H%x1f%h%x1f%ct%x1f%s";
+const LOG_FORMAT: &str = "--format=%H%x1f%h%x1f%ct%x1f%cz%x1f%an%x1f%s";
 
 /// What one commit changed below `root` (a merge against its first parent), and where the
 /// root sits inside the repository, which the diffs are then asked with.
@@ -385,10 +388,15 @@ fn parse_log(log: &[u8]) -> Answer<Vec<Commit>> {
             continue;
         }
         let record = String::from_utf8_lossy(record);
-        let mut fields = record.splitn(4, '\x1f');
-        let (Some(hash), Some(short), Some(time), Some(subject)) =
-            (fields.next(), fields.next(), fields.next(), fields.next())
-        else {
+        let mut fields = record.splitn(6, '\x1f');
+        let (Some(hash), Some(short), Some(time), Some(zone), Some(author), Some(subject)) = (
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+        ) else {
             return Err(format!("git log: unreadable entry {record:?}"));
         };
         let Ok(time) = time.parse() else {
@@ -398,6 +406,8 @@ fn parse_log(log: &[u8]) -> Answer<Vec<Commit>> {
             hash: hash.to_string(),
             short: short.to_string(),
             time,
+            date: format_date(time, zone),
+            author: author.to_string(),
             subject: subject.to_string(),
             file: None,
             file_from: None,
@@ -454,6 +464,7 @@ fn parse_blame(answer: &str) -> Answer<Blame> {
         .ok_or("git blame: no answer")?;
     let mut author = "";
     let mut time = "";
+    let mut zone = "";
     let mut subject = "";
     let mut file = "";
     for line in lines.take_while(|line| !line.starts_with('\t')) {
@@ -461,6 +472,7 @@ fn parse_blame(answer: &str) -> Answer<Blame> {
         match key {
             "author" => author = value,
             "committer-time" => time = value,
+            "committer-tz" => zone = value,
             "summary" => subject = value,
             "filename" => file = value,
             _ => {}
@@ -476,6 +488,8 @@ fn parse_blame(answer: &str) -> Answer<Blame> {
             hash: hash.to_string(),
             short: hash.chars().take(7).collect(),
             time,
+            date: format_date(time, zone),
+            author: author.to_string(),
             subject: subject.to_string(),
             file: Some(file.to_string()),
             file_from: None,
@@ -485,6 +499,47 @@ fn parse_blame(answer: &str) -> Answer<Blame> {
         author: author.to_string(),
         commit,
     })
+}
+
+/// A moment as `2026-09-13 16:36` on the clock of a zone written as git writes it,
+/// `+0200`; a zone that cannot be read is taken as UTC.
+fn format_date(time: i64, zone: &str) -> String {
+    let offset = zone
+        .get(1..5)
+        .filter(|digits| digits.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|digits| {
+            let hours: i64 = digits[..2].parse().ok()?;
+            let minutes: i64 = digits[2..].parse().ok()?;
+            let offset = (hours * 60 + minutes) * 60;
+            match zone.as_bytes()[0] {
+                b'+' => Some(offset),
+                b'-' => Some(-offset),
+                _ => None,
+            }
+        })
+        .unwrap_or(0);
+    let local = time + offset;
+    let (days, seconds) = (local.div_euclid(86_400), local.rem_euclid(86_400));
+    // Days since 1970 to a civil date, after Howard Hinnant's `civil_from_days`.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let day_of_era = z.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02}",
+        seconds / 3600,
+        seconds % 3600 / 60
+    )
 }
 
 #[cfg(test)]
@@ -602,11 +657,13 @@ mod tests {
 
     #[test]
     fn log_reads_a_page_of_commits() {
-        let log = b"abc123full\x1fabc123f\x1f1700000000\x1ffirst: subject\0def456full\x1fdef456f\x1f1699999999\x1fsecond\0";
+        let log = b"abc123full\x1fabc123f\x1f1700000000\x1f+0100\x1fAda Lovelace\x1ffirst: subject\0def456full\x1fdef456f\x1f1699999999\x1f+0000\x1fAlan Turing\x1fsecond\0";
         let commits = parse_log(log).unwrap();
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].short, "abc123f");
         assert_eq!(commits[0].time, 1700000000);
+        assert_eq!(commits[0].date, "2023-11-14 23:13");
+        assert_eq!(commits[0].author, "Ada Lovelace");
         assert_eq!(commits[0].subject, "first: subject");
         assert_eq!(commits[0].file, None);
         assert_eq!(commits[1].subject, "second");
@@ -614,7 +671,7 @@ mod tests {
 
     #[test]
     fn a_file_log_names_the_file_as_each_commit_had_it() {
-        let log = b"h1\x1fh1\x1f10\x1fmoved it\0\nR100\0old/name.rs\0new/name.rs\0h2\x1fh2\x1f9\x1fwrote it\0\nA\0old/name.rs\0";
+        let log = b"h1\x1fh1\x1f10\x1f+0000\x1fa\x1fmoved it\0\nR100\0old/name.rs\0new/name.rs\0h2\x1fh2\x1f9\x1f+0000\x1fa\x1fwrote it\0\nA\0old/name.rs\0";
         let commits = parse_log(log).unwrap();
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].file.as_deref(), Some("new/name.rs"));
@@ -625,7 +682,7 @@ mod tests {
 
     #[test]
     fn log_refuses_an_unreadable_date() {
-        assert!(parse_log(b"h\x1fh\x1fyesterday\x1fs\0").is_err());
+        assert!(parse_log(b"h\x1fh\x1fyesterday\x1f+0000\x1fa\x1fs\0").is_err());
     }
 
     #[test]
@@ -659,6 +716,7 @@ mod tests {
             author Santiago Corredoira\n\
             author-mail <s@example.com>\n\
             committer-time 1786727071\n\
+            committer-tz +0200\n\
             summary docs: the subject\n\
             filename CLAUDE.md\n\
             \tthe line itself\n";
@@ -667,8 +725,18 @@ mod tests {
         let commit = blame.commit.unwrap();
         assert_eq!(commit.short, "4da9363");
         assert_eq!(commit.time, 1786727071);
+        assert_eq!(commit.date, "2026-08-14 19:04");
+        assert_eq!(commit.author, "Santiago Corredoira");
         assert_eq!(commit.subject, "docs: the subject");
         assert_eq!(commit.file.as_deref(), Some("CLAUDE.md"));
+    }
+
+    #[test]
+    fn dates_read_on_the_committers_clock() {
+        assert_eq!(format_date(0, "+0000"), "1970-01-01 00:00");
+        assert_eq!(format_date(0, "-0130"), "1969-12-31 22:30");
+        assert_eq!(format_date(951_782_400, "+0000"), "2000-02-29 00:00");
+        assert_eq!(format_date(0, "zone"), "1970-01-01 00:00");
     }
 
     #[test]

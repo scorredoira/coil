@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use helix_core::unicode::width::UnicodeWidthStr;
 use helix_view::graphics::{Modifier, Style};
 use helix_view::{Editor, Theme};
 use tui::buffer::Buffer as Surface;
@@ -18,6 +19,13 @@ use super::{TabKind, REFRESH};
 /// How long the cursor rests on a commit before its diff is asked for: a wheel or a held
 /// arrow passes over many, and only the one it stops on is wanted.
 const PREVIEW_DELAY: Duration = Duration::from_millis(150);
+
+/// The most columns an author takes in a wide list: a longer name is cut.
+const AUTHOR_MAX_WIDTH: usize = 20;
+
+/// The columns the subject must still have for a list to show each commit's hash, date and
+/// author before it; a narrower list shows the subject and its age alone.
+const WIDE_SUBJECT_WIDTH: usize = 40;
 
 pub struct CommitsTab {
     root: PathBuf,
@@ -492,25 +500,19 @@ impl TabView for CommitsTab {
             .map(Path::to_path_buf);
         let mut rows = Vec::new();
         if let Some(opened) = &self.opened {
-            rows.push(Row::Commit(CommitRow {
-                index: 0,
-                short: opened.commit.short.clone(),
-                subject: opened.commit.subject.clone(),
-                time: opened.commit.time,
-                head: true,
-            }));
+            rows.push(Row::Commit(commit_row(
+                0,
+                &opened.commit,
+                author_width([&opened.commit]),
+                true,
+            )));
             entries::list_changed(&self.root, &opened.files, &opened.folds, &mut rows);
         }
         let mut history_rows = Vec::new();
         if let Some(Ok(commits)) = &self.log {
+            let author_width = author_width(commits);
             for (index, commit) in commits.iter().enumerate() {
-                history_rows.push(Row::Commit(CommitRow {
-                    index,
-                    short: commit.short.clone(),
-                    subject: commit.subject.clone(),
-                    time: commit.time,
-                    head: false,
-                }));
+                history_rows.push(Row::Commit(commit_row(index, commit, author_width, false)));
             }
         }
         self.history_rows = history_rows;
@@ -591,8 +593,32 @@ impl TabView for CommitsTab {
     }
 }
 
-/// Draws a commit on one line: its short hash when it is the opened commit's own row, its
-/// subject, and its age at the right edge.
+fn commit_row(index: usize, commit: &Commit, author_width: usize, head: bool) -> CommitRow {
+    CommitRow {
+        index,
+        short: commit.short.clone(),
+        subject: commit.subject.clone(),
+        time: commit.time,
+        date: commit.date.clone(),
+        author: commit.author.clone(),
+        author_width,
+        head,
+    }
+}
+
+/// The columns the longest of these authors takes, up to `AUTHOR_MAX_WIDTH`.
+fn author_width<'a>(commits: impl IntoIterator<Item = &'a Commit>) -> usize {
+    commits
+        .into_iter()
+        .map(|commit| commit.author.width())
+        .max()
+        .unwrap_or(0)
+        .min(AUTHOR_MAX_WIDTH)
+}
+
+/// Draws a commit on one line. A list wide enough reads as `git log` does: hash, date,
+/// author and subject; a narrower one shows the subject and its age at the right edge,
+/// with the hash only on the opened commit's own row.
 pub fn draw_commit(surface: &mut Surface, paint: &RowPaint, row: &CommitRow, theme: &Theme) {
     let text_style = theme.get("ui.text");
     // The selection's background can be the dimmed colour itself, so a selected row draws
@@ -614,6 +640,34 @@ pub fn draw_commit(surface: &mut Surface, paint: &RowPaint, row: &CommitRow, the
     let x = paint.line.x + 1;
     let y = paint.line.y;
     let width = (paint.line.width as usize).saturating_sub(2);
+    let paint_subject = |_: usize| -> Style { subject_style };
+    let wide_prefix = row.short.width() + 1 + row.date.width() + 1 + row.author_width + 1;
+    if width >= wide_prefix + WIDE_SUBJECT_WIDTH {
+        let (after_hash, _) = surface.set_stringn(x, y, &row.short, width, dim_style);
+        let (after_date, _) =
+            surface.set_stringn(after_hash + 1, y, &row.date, row.date.width(), dim_style);
+        let author_x = after_date + 1;
+        surface.set_string_truncated(
+            author_x,
+            y,
+            &row.author,
+            row.author_width,
+            |_| dim_style,
+            true,
+            false,
+        );
+        let subject_x = x + wide_prefix as u16;
+        surface.set_string_truncated(
+            subject_x,
+            y,
+            &row.subject,
+            width - wide_prefix,
+            paint_subject,
+            true,
+            false,
+        );
+        return;
+    }
     let age = format_age(row.time);
     let mut subject_x = x;
     if row.head {
@@ -622,7 +676,6 @@ pub fn draw_commit(surface: &mut Surface, paint: &RowPaint, row: &CommitRow, the
     }
     let used = (subject_x - x) as usize;
     let subject_width = width.saturating_sub(used + age.len() + 1);
-    let paint_subject = |_: usize| -> Style { subject_style };
     surface.set_string_truncated(
         subject_x,
         y,
@@ -671,19 +724,13 @@ mod tests {
             hash: "abc123".into(),
             short: "abc123".into(),
             time: 0,
+            date: "1970-01-01 00:00".into(),
+            author: "Someone".into(),
             subject: "A commit".into(),
             file: None,
             file_from: None,
         };
-        let row = || {
-            Row::Commit(CommitRow {
-                index: 0,
-                short: commit.short.clone(),
-                subject: commit.subject.clone(),
-                time: 0,
-                head: false,
-            })
-        };
+        let row = || Row::Commit(commit_row(0, &commit, 7, false));
         tab.history_rows = vec![row(), row()];
         tab.rows = vec![row()];
         tab.history_list.set_len(2);

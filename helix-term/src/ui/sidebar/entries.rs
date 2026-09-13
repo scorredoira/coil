@@ -41,6 +41,10 @@ pub struct CommitRow {
     pub short: String,
     pub subject: String,
     pub time: i64,
+    pub date: String,
+    pub author: String,
+    /// The columns the authors take in a wide list, so the subjects line up.
+    pub author_width: usize,
     /// The opened commit's own row, over its files, which alone names its hash.
     pub head: bool,
 }
