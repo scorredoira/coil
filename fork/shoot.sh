@@ -69,20 +69,34 @@ commit_row() {
 # Moves the tree's cursor down n rows.
 down() {
 	for ((i = 1; i < $1; i++)); do
-		tmux -L "$socket" send-keys -t shot j
+		tmux -L "$socket" send-keys -t shot Down
 	done
 	sleep 0.4
 }
+
+# The stacked history/files layout and the searchable shortcut popup.
+review_shots() {
+	start helix-term/src/ui/sidebar/mod.rs
+	keys F6 Home
+	down "$(commit_row "ui: show commit files in a side column")"
+	keys Enter
+	shoot commits 2
+	keys Escape
+	keys F1
+	typed review_
+	shoot shortcuts
+}
+
+if [[ "${1:-}" == "--review-only" ]]; then
+	review_shots
+	exit 0
+fi
 
 start helix-term/src/ui/editor.rs helix-term/src/ui/sidebar/commits.rs
 keys Space T
 shoot tree
 
-keys Tab Tab
-keys Home
-# Moving onto a commit shows its whole diff in the editor.
-down "$(commit_row "render: a diff draws no indentation guides")"
-shoot commits 2
+review_shots
 
 start helix-term/src/ui/sidebar/commits.rs
 keys 3 9 G

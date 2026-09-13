@@ -28,16 +28,16 @@ pub struct LinePos {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn render_document(
+pub fn render_document<'a>(
     surface: &mut Surface,
     viewport: Rect,
-    doc: &Document,
+    doc: &'a Document,
     offset: ViewPosition,
     doc_annotations: &TextAnnotations,
     syntax_highlighter: Option<Highlighter<'_>>,
     overlay_highlights: Vec<syntax::OverlayHighlights>,
-    theme: &Theme,
-    decorations: DecorationManager,
+    theme: &'a Theme,
+    mut decorations: DecorationManager<'a>,
 ) {
     let mut renderer = TextRenderer::new(
         surface,
@@ -46,6 +46,48 @@ pub fn render_document(
         Position::new(offset.vertical_offset, offset.horizontal_offset),
         viewport,
     );
+    if let Some(review) = &doc.review {
+        decorations.add_decoration(move |renderer: &mut TextRenderer, pos: LinePos| {
+            let Some(line) = review.lines.get(pos.doc_line) else {
+                return;
+            };
+            let style = helix_view::review::line_style(line.kind, theme);
+            renderer.set_style(
+                Rect::new(
+                    renderer.viewport.x,
+                    pos.visual_line,
+                    renderer.viewport.width,
+                    1,
+                ),
+                style,
+            );
+        });
+    } else if doc.language_name() == Some("diff") {
+        let header_style = theme
+            .try_get("ui.diff.header")
+            .unwrap_or_else(|| theme.get("ui.statusline"));
+        decorations.add_decoration(move |renderer: &mut TextRenderer, pos: LinePos| {
+            let line = doc.text().line(pos.doc_line);
+            let is_header = ["diff --git ", "diff --cc ", "diff --combined "]
+                .iter()
+                .any(|prefix| line.chars().take(prefix.len()).eq(prefix.chars()));
+            if !is_header {
+                return;
+            }
+            let Some(row) = pos.visual_line.checked_sub(renderer.offset.row as u16) else {
+                return;
+            };
+            if row < renderer.viewport.height {
+                let band = Rect::new(
+                    renderer.viewport.x,
+                    renderer.viewport.y + row,
+                    renderer.viewport.width,
+                    1,
+                );
+                renderer.surface.set_style(band, header_style);
+            }
+        });
+    }
     render_text(
         &mut renderer,
         doc.text().slice(..),
@@ -269,7 +311,8 @@ impl<'a> TextRenderer<'a> {
             // Every line of a diff opens with its marker column, so its leading space is not
             // indentation and a guide there would only stripe the patch.
             draw_indent_guides: editor_config.indent_guides.render
-                && doc.language_name() != Some("diff"),
+                && doc.language_name() != Some("diff")
+                && doc.review.is_none(),
             viewport,
             offset,
         }

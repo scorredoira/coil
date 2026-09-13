@@ -266,6 +266,12 @@ impl EditorView {
         let syntax_highlighter =
             Self::doc_syntax_highlighter(doc, view_offset.anchor, inner.height, &loader);
         let mut overlays = Vec::new();
+        if let Some(review) = &doc.review {
+            let text = doc.text();
+            let first = text.char_to_line(view_offset.anchor.min(text.len_chars()));
+            let end = (first + inner.height as usize + 1).min(text.len_lines());
+            overlays.extend(review.highlights(text, first..end, &loader));
+        }
 
         overlays.push(Self::overlay_syntax_highlights(
             doc,
@@ -1605,7 +1611,7 @@ impl EditorView {
             }
 
             if let Some((pos, view_id)) = pos_and_view(cxt.editor, row, column, true) {
-                self.sidebar.focused = false;
+                self.sidebar.focus_code();
                 cxt.editor.focus(view_id);
 
                 // Pointing outside the selection takes the caret there first: the menu acts
@@ -1620,6 +1626,23 @@ impl EditorView {
                     doc.set_selection(view.id, Selection::point(pos));
                 }
 
+                return open_editor_menu(row, column);
+            }
+            // The gutter and blank space still belong to the code panel.
+            let view = cxt
+                .editor
+                .tree
+                .views()
+                .find(|(view, _)| {
+                    row >= view.area.y
+                        && row < view.area.bottom()
+                        && column >= view.area.x
+                        && column < view.area.right()
+                })
+                .map(|(view, _)| view.id);
+            if let Some(view) = view {
+                self.sidebar.focus_code();
+                cxt.editor.focus(view);
                 return open_editor_menu(row, column);
             }
         }
@@ -2125,17 +2148,23 @@ impl Component for EditorView {
 
         // -1 for commandline and the bufferline's rows
         let mut editor_area = area.clip_bottom(1);
+        let code_hidden = self.sidebar.code_hidden();
         if self.sidebar.open {
-            let sidebar_width = self
-                .sidebar
-                .width(config.sidebar.width)
-                .min(area.width.saturating_sub(sidebar::EDITOR_ROOM));
+            let sidebar_width = if code_hidden {
+                area.width
+            } else {
+                self.sidebar
+                    .width(config.sidebar.width, area.width)
+                    .min(area.width.saturating_sub(sidebar::EDITOR_ROOM))
+            };
             let sidebar_area = editor_area.with_width(sidebar_width);
             self.sidebar.render(sidebar_area, surface, cx.editor);
-            editor_area = editor_area.clip_left(sidebar_width);
+            if !code_hidden {
+                editor_area = editor_area.clip_left(sidebar_width);
+            }
         }
         let full_preview = self.markdown_preview.is_full(cx.editor);
-        let preview_width = if full_preview {
+        let preview_width = if full_preview || code_hidden {
             0
         } else {
             self.markdown_preview.width(cx.editor, editor_area)
@@ -2149,7 +2178,7 @@ impl Component for EditorView {
         // if the terminal size suddenly changed, we need to trigger a resize
         cx.editor.resize(editor_area);
 
-        if use_bufferline {
+        if use_bufferline && !code_hidden {
             let bufferline_area =
                 Rect::new(editor_area.x, area.y, editor_area.width, BUFFERLINE_HEIGHT);
             self.render_bufferline(cx.editor, bufferline_area, surface);
@@ -2159,7 +2188,9 @@ impl Component for EditorView {
 
         // The preview on its own takes the room the views would have had, and they are
         // not drawn at all: the file is behind it.
-        if full_preview {
+        if code_hidden {
+            self.markdown_preview.hide();
+        } else if full_preview {
             self.markdown_preview
                 .render_full(editor_area, surface, cx.editor);
         } else {
@@ -2297,8 +2328,10 @@ fn run_command(
 
 /// Split the file that was pointed at, without replacing the current view.
 fn open_tab_menu(row: u16, column: u16, doc_id: helix_view::DocumentId) -> EventResult {
-    EventResult::Consumed(Some(Box::new(move |compositor, _cx| {
-        let entries = [
+    EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+        cx.editor
+            .switch(doc_id, helix_view::editor::Action::Replace);
+        let mut entries: Vec<_> = [
             (
                 "Split vertically",
                 helix_view::editor::Action::VerticalSplit,
@@ -2316,67 +2349,156 @@ fn open_tab_menu(row: u16, column: u16, doc_id: helix_view::DocumentId) -> Event
                 Box::new(move |compositor, cx| {
                     let view = compositor.find::<EditorView>().unwrap();
                     view.markdown_preview.full = false;
-                    view.sidebar.focused = false;
+                    view.sidebar.focus_code();
                     cx.editor.switch(doc_id, action);
                 }),
             )
         })
         .collect();
+        entries.extend(review_menu_entries(compositor, cx));
         let menu = context_menu::ContextMenu::new((row, column), entries);
         compositor.push(Box::new(menu));
+    })))
+}
+
+/// The same panel controls are reachable from either side, including when one is hidden.
+fn review_menu_entries(
+    compositor: &mut Compositor,
+    cx: &compositor::Context,
+) -> Vec<context_menu::Entry> {
+    let view = compositor.find::<EditorView>().unwrap();
+    let commits = view.sidebar.showing(sidebar::TabKind::Commits);
+    let hidden = view.sidebar.code_hidden();
+    let full = view.sidebar.full_context();
+    let mut entries = vec![
+        context_menu::Entry::new(
+            if commits {
+                "Hide commits panel"
+            } else {
+                "Show commits panel"
+            },
+            "F6",
+            Box::new(|compositor, cx| {
+                run_command(compositor, cx, MappableCommand::review_commits_toggle)
+            }),
+        ),
+        context_menu::Entry::new(
+            if hidden {
+                "Show code panel"
+            } else {
+                "Hide code panel"
+            },
+            "F7",
+            Box::new(|compositor, cx| {
+                run_command(compositor, cx, MappableCommand::review_code_toggle)
+            }),
+        ),
+    ];
+    if doc!(cx.editor).review.is_some() {
+        entries.push(context_menu::Entry::new(
+            if full {
+                "Show changed sections only"
+            } else {
+                "Show full file context"
+            },
+            "F4",
+            Box::new(|compositor, cx| {
+                run_command(compositor, cx, MappableCommand::review_context_toggle)
+            }),
+        ));
+    }
+    entries.push(context_menu::Entry::new(
+        "Keyboard shortcuts",
+        "F1",
+        Box::new(|compositor, cx| run_command(compositor, cx, MappableCommand::keyboard_shortcuts)),
+    ));
+    entries
+}
+
+pub(super) fn open_review_menu(row: u16, column: u16) -> EventResult {
+    EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+        let entries = review_menu_entries(compositor, cx);
+        compositor.push(Box::new(context_menu::ContextMenu::new(
+            (row, column),
+            entries,
+        )));
     })))
 }
 
 /// What can be done to the text under the pointer.
 fn open_editor_menu(row: u16, column: u16) -> EventResult {
     EventResult::Consumed(Some(Box::new(move |compositor, cx| {
-        let mut entries = vec![
-            context_menu::Entry::new(
-                "Cut",
-                "Ctrl-x",
-                Box::new(|compositor, cx| {
-                    run_command(compositor, cx, MappableCommand::cut_to_clipboard)
-                }),
-            ),
-            context_menu::Entry::new(
+        let review = doc!(cx.editor).review.is_some();
+        let mut entries = if review {
+            vec![context_menu::Entry::new(
                 "Copy",
                 "Ctrl-c",
                 Box::new(|compositor, cx| {
                     run_command(compositor, cx, MappableCommand::copy_to_clipboard)
                 }),
-            ),
-            context_menu::Entry::new(
-                "Paste",
-                "Ctrl-v",
-                Box::new(|compositor, cx| {
-                    run_command(compositor, cx, MappableCommand::paste_from_clipboard)
-                }),
-            ),
-            context_menu::Entry::new(
-                "Go to the definition",
-                "F12",
-                Box::new(|compositor, cx| {
-                    run_command(compositor, cx, MappableCommand::goto_definition)
-                }),
-            ),
-            context_menu::Entry::new(
-                "Rename the symbol",
-                "F2",
-                Box::new(|compositor, cx| {
-                    run_command(compositor, cx, MappableCommand::rename_symbol)
-                }),
-            ),
-            context_menu::Entry::new(
+            )]
+        } else {
+            vec![
+                context_menu::Entry::new(
+                    "Cut",
+                    "Ctrl-x",
+                    Box::new(|compositor, cx| {
+                        run_command(compositor, cx, MappableCommand::cut_to_clipboard)
+                    }),
+                ),
+                context_menu::Entry::new(
+                    "Copy",
+                    "Ctrl-c",
+                    Box::new(|compositor, cx| {
+                        run_command(compositor, cx, MappableCommand::copy_to_clipboard)
+                    }),
+                ),
+                context_menu::Entry::new(
+                    "Paste",
+                    "Ctrl-v",
+                    Box::new(|compositor, cx| {
+                        run_command(compositor, cx, MappableCommand::paste_from_clipboard)
+                    }),
+                ),
+                context_menu::Entry::new(
+                    "Go to the definition",
+                    "F12",
+                    Box::new(|compositor, cx| {
+                        run_command(compositor, cx, MappableCommand::goto_definition)
+                    }),
+                ),
+                context_menu::Entry::new(
+                    "Rename the symbol",
+                    "F2",
+                    Box::new(|compositor, cx| {
+                        run_command(compositor, cx, MappableCommand::rename_symbol)
+                    }),
+                ),
+                context_menu::Entry::new(
+                    "Split vertically",
+                    "",
+                    Box::new(|compositor, cx| run_command(compositor, cx, MappableCommand::vsplit)),
+                ),
+                context_menu::Entry::new(
+                    "Split horizontally",
+                    "",
+                    Box::new(|compositor, cx| run_command(compositor, cx, MappableCommand::hsplit)),
+                ),
+            ]
+        };
+        if review {
+            entries.push(context_menu::Entry::new(
                 "Split vertically",
                 "",
                 Box::new(|compositor, cx| run_command(compositor, cx, MappableCommand::vsplit)),
-            ),
-            context_menu::Entry::new(
+            ));
+            entries.push(context_menu::Entry::new(
                 "Split horizontally",
                 "",
                 Box::new(|compositor, cx| run_command(compositor, cx, MappableCommand::hsplit)),
-            ),
-        ];
+            ));
+        }
+        entries.extend(review_menu_entries(compositor, cx));
 
         // Closing the last view exits the editor; this menu only closes a split.
         if cx.editor.tree.views().count() > 1 {

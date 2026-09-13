@@ -286,6 +286,10 @@ mod tests {
             assert_eq!(command_at(&config, mode, &["C-y"]), "redo");
             assert_eq!(command_at(&config, mode, &["C-p"]), "file_picker");
             assert_eq!(command_at(&config, mode, &["C-P"]), "command_palette");
+            assert_eq!(command_at(&config, mode, &["F1"]), "keyboard_shortcuts");
+            assert_eq!(command_at(&config, mode, &["F4"]), "review_context_toggle");
+            assert_eq!(command_at(&config, mode, &["F6"]), "review_commits_toggle");
+            assert_eq!(command_at(&config, mode, &["F7"]), "review_code_toggle");
             assert_eq!(command_at(&config, mode, &["C-F"]), "global_search");
             assert_eq!(command_at(&config, mode, &["C-b"]), "sidebar_toggle");
             assert_eq!(command_at(&config, mode, &["C-R"]), "sidebar_reveal");

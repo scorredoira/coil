@@ -1,6 +1,7 @@
 | Name | Description | Default keybinds |
 | --- | --- | --- |
 | `no_op` | Do nothing |  |
+| `escape` | Close what is open, and leave insert mode when the editor is modal |  |
 | `move_char_left` | Move left | normal: `` h ``, `` <left> ``, insert: `` <left> `` |
 | `move_char_right` | Move right | normal: `` l ``, `` <right> ``, insert: `` <right> `` |
 | `move_line_up` | Move up | normal: `` gk `` |
@@ -80,6 +81,7 @@
 | `search_selection_detect_word_boundaries` | Use current selection as the search pattern, automatically wrapping with `\b` on word boundaries | normal: `` * ``, select: `` * `` |
 | `make_search_word_bounded` | Modify current search to make it word bounded |  |
 | `global_search` | Global search in workspace folder | normal: `` <space>/ ``, select: `` <space>/ `` |
+| `search_in_file` | Search and replace in the current file |  |
 | `extend_line` | Select current line, if already selected, extend to another line based on the anchor |  |
 | `extend_line_below` | Select current line, if already selected, extend to next line | normal: `` x ``, select: `` x `` |
 | `extend_line_above` | Select current line, if already selected, extend to previous line |  |
@@ -89,6 +91,7 @@
 | `shrink_to_line_bounds` | Shrink selection to line bounds | normal: `` <A-x> ``, select: `` <A-x> `` |
 | `delete_selection` | Delete selection | normal: `` d ``, select: `` d `` |
 | `delete_selection_noyank` | Delete selection without yanking | normal: `` <A-d> ``, select: `` <A-d> `` |
+| `delete_selection_or_previous_char` | Delete the selection, or the character before a bare cursor |  |
 | `change_selection` | Change selection | normal: `` c ``, select: `` c `` |
 | `change_selection_noyank` | Change selection without yanking | normal: `` <A-c> ``, select: `` <A-c> `` |
 | `collapse_selection` | Collapse selection into single cursor | normal: `` ; ``, select: `` ; `` |
@@ -105,6 +108,15 @@
 | `file_explorer_in_current_directory` | Open file explorer at current working directory |  |
 | `sidebar_focus` | Focus the sidebar, opening it if closed | normal: `` <space>T ``, select: `` <space>T `` |
 | `sidebar_toggle` | Show or hide the sidebar | normal: `` <space>t ``, select: `` <space>t `` |
+| `review_commits_toggle` | Show or hide the commits panel |  |
+| `review_code_toggle` | Show or hide the code panel while reviewing commits |  |
+| `review_context_toggle` | Toggle full file context in the current commit diff |  |
+| `keyboard_shortcuts` | Show a searchable reference of keyboard shortcuts |  |
+| `sidebar_reveal` | Reveal the current file in the sidebar's tree, focused |  |
+| `markdown_preview_toggle` | Show or hide the Markdown preview beside the file |  |
+| `markdown_preview_full` | Show or hide the Markdown preview on its own, filling the screen |  |
+| `quit_saving` | Save every file that has one and quit, asking about what cannot be saved |  |
+| `settings` | Show the settings, and write what you change to config.toml |  |
 | `file_history` | Show the history of the current file in the sidebar | normal: `` <space>H ``, select: `` <space>H `` |
 | `blame_line` | Show who last changed the current line; again opens that commit | normal: `` <space>B ``, select: `` <space>B `` |
 | `code_action` | Perform code action | normal: `` <space>a ``, select: `` <space>a `` |
@@ -149,6 +161,7 @@
 | `goto_last_modified_file` | Goto last modified file | normal: `` gm ``, select: `` gm `` |
 | `goto_last_modification` | Goto last modification | normal: `` g. ``, select: `` g. `` |
 | `goto_line` | Goto line | normal: `` G ``, select: `` G `` |
+| `goto_line_prompt` | Ask for a line number and go to it |  |
 | `goto_last_line` | Goto last line | normal: `` ge `` |
 | `extend_to_last_line` | Extend to last line | select: `` ge `` |
 | `goto_first_diag` | Goto first diagnostic | normal: `` [D ``, select: `` [D `` |
@@ -190,6 +203,16 @@
 | `later` | Move forward in history | normal: `` <A-U> ``, select: `` <A-U> `` |
 | `commit_undo_checkpoint` | Commit changes to new checkpoint | insert: `` <C-s> `` |
 | `yank` | Yank selection | normal: `` y ``, select: `` y `` |
+| `duplicate_line` | Put a copy of every line the selection touches under it |  |
+| `delete_line` | Delete every line the selection touches |  |
+| `move_lines_up` | Move the lines the selection touches one line up |  |
+| `move_lines_down` | Move the lines the selection touches one line down |  |
+| `select_next_occurrence` | Select the word under the caret, then where it appears next |  |
+| `select_all_occurrences` | Select every place the word under the caret appears |  |
+| `save_as` | Write the file under a name this asks for |  |
+| `copy_to_clipboard` | Copy the selection, or the whole line when there is none |  |
+| `cut_to_clipboard` | Cut the selection, or the whole line when there is none |  |
+| `paste_from_clipboard` | Paste at the cursor, over the selection when there is one |  |
 | `yank_to_clipboard` | Yank selections to clipboard | normal: `` <space>y ``, select: `` <space>y `` |
 | `yank_to_primary_clipboard` | Yank selections to primary clipboard |  |
 | `yank_joined` | Join and yank selections |  |

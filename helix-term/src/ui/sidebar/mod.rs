@@ -8,12 +8,14 @@
 //! and the answer lands back in the sidebar on the main thread, as a job of the editor's.
 
 pub mod changes;
+mod commit_layout;
 pub mod commits;
 pub mod diff_view;
 pub mod entries;
 pub mod files;
 pub mod git;
 pub mod list;
+mod review;
 pub mod tab;
 
 use std::path::{Path, PathBuf};
@@ -32,6 +34,7 @@ use crate::ui::editor;
 use crate::ui::panel_width;
 
 use changes::{Act, ChangesTab};
+use commit_layout::CommitLayout;
 use commits::CommitsTab;
 use diff_view::DiffView;
 use entries::{Row, RowPaint};
@@ -88,6 +91,7 @@ pub struct Sidebar {
     diff: DiffView,
     pub open: bool,
     pub focused: bool,
+    code_hidden: bool,
     /// Whether the first render has laid the rows out; before it there is no editor to ask.
     built: bool,
     /// The document the sidebar last moved onto, so a buffer switch is noticed at render.
@@ -99,6 +103,8 @@ pub struct Sidebar {
     width: Option<u16>,
     /// Whether the separator is being dragged, so the mouse is the sidebar's wherever it goes.
     resizing: bool,
+    resizing_split: bool,
+    commit_layout: CommitLayout,
     /// Why the remembered width could not be read, said on the first render: at startup the
     /// editor's own messages would cover it.
     width_error: Option<String>,
@@ -131,6 +137,16 @@ impl Sidebar {
                 (None, Some(message))
             }
         };
+        let (commit_layout, layout_error) = match CommitLayout::load() {
+            Ok(layout) => (layout, None),
+            Err(err) => {
+                log::error!("Could not read the commit layout: {err:#}");
+                (
+                    CommitLayout::default(),
+                    Some(format!("Could not read the commit layout: {err:#}")),
+                )
+            }
+        };
         Self {
             files: FilesTab::new(root.clone()),
             changes: ChangesTab::new(root.clone()),
@@ -140,30 +156,47 @@ impl Sidebar {
             tab: TabKind::Files,
             open,
             focused: false,
+            code_hidden: false,
             built: false,
             revealed: None,
             area: Rect::default(),
             tab_columns: [(0, 0); TabKind::ALL.len()],
             width,
             resizing: false,
-            width_error,
+            resizing_split: false,
+            commit_layout,
+            width_error: width_error.or(layout_error),
             last_click: None,
             typed: (String::new(), None),
         }
     }
 
-    /// The sidebar's width: the one the separator was dragged to, else the configured one.
-    pub fn width(&self, configured: u16) -> u16 {
-        let width = self.width.unwrap_or(configured);
-        if self.tab == TabKind::Commits && self.commits.has_columns() {
-            width.saturating_mul(2)
+    /// Commits starts at half the terminal, capped for wide monitors; explicit drags win.
+    pub fn width(&self, configured: u16, screen_width: u16) -> u16 {
+        if self.tab == TabKind::Commits {
+            self.commit_layout.width(screen_width)
         } else {
-            width
+            self.width.unwrap_or(configured)
+        }
+    }
+
+    fn stacked_areas(&self) -> Option<[Rect; 2]> {
+        if self.tab == TabKind::Commits && self.commits.has_files() {
+            self.commit_layout.panes(self.area)
+        } else {
+            None
+        }
+    }
+
+    fn active_area(&self) -> Rect {
+        match self.stacked_areas() {
+            Some(panes) => panes[usize::from(self.commits.panes()[1].2)],
+            None => self.area,
         }
     }
 
     pub fn resizing(&self) -> bool {
-        self.resizing
+        self.resizing || self.resizing_split
     }
 
     /// Whether `kind` is the tab on screen.
@@ -171,11 +204,52 @@ impl Sidebar {
         self.open && self.tab == kind
     }
 
+    pub fn code_hidden(&self) -> bool {
+        self.showing(TabKind::Commits) && self.code_hidden
+    }
+
+    pub fn focus_code(&mut self) {
+        self.code_hidden = false;
+        self.focused = false;
+    }
+
+    pub fn toggle_commits(&mut self, editor: &mut Editor) {
+        if self.showing(TabKind::Commits) {
+            self.open = false;
+            self.focus_code();
+        } else {
+            self.open = true;
+            self.focused = true;
+            self.code_hidden = false;
+            self.tab = TabKind::Commits;
+            self.came_on_screen(editor);
+        }
+    }
+
+    pub fn toggle_code(&mut self, editor: &mut Editor) {
+        let hide = !self.code_hidden();
+        if hide && !self.showing(TabKind::Commits) {
+            self.toggle_commits(editor);
+        }
+        self.code_hidden = hide;
+        self.focused = hide;
+    }
+
+    pub fn toggle_context(&mut self, editor: &mut Editor) {
+        self.focus_code();
+        self.diff.toggle_context(editor);
+    }
+
+    pub fn full_context(&self) -> bool {
+        self.diff.full_context()
+    }
+
     pub fn toggle(&mut self, editor: &mut Editor) {
         self.open = !self.open;
         if self.open {
             self.came_on_screen(editor);
         } else {
+            self.code_hidden = false;
             self.focused = false;
         }
     }
@@ -285,6 +359,7 @@ impl Sidebar {
             tab.step_back(&mut cx);
             return;
         }
+        self.code_hidden = false;
         self.tab = kind;
         self.came_on_screen(editor);
     }
@@ -420,18 +495,16 @@ impl Sidebar {
                 return result;
             }
         }
-        let editor = &mut cx.editor;
-        if self.tab == TabKind::Commits && self.commits.has_columns() {
-            if key.code == KeyCode::Left && key.modifiers.is_empty() {
-                self.commits.focus_files(false);
-                return EventResult::Consumed(None);
-            }
-            if key.code == KeyCode::Right && key.modifiers.is_empty() && self.commits.columns()[0].2
-            {
-                self.commits.focus_files(true);
-                return EventResult::Consumed(None);
-            }
+        if self.tab == TabKind::Commits
+            && self.commits.has_files()
+            && key.modifiers == KeyModifiers::ALT
+            && matches!(key.code, KeyCode::Up | KeyCode::Down)
+        {
+            self.commits.focus_files(key.code == KeyCode::Down);
+            self.last_click = None;
+            return EventResult::Consumed(None);
         }
+        let editor = &mut cx.editor;
         let before = self.active().list().cursor;
         let half_page = self.active().list().half_page();
         let page = self.active().list().page as isize;
@@ -440,6 +513,7 @@ impl Sidebar {
                 let (tab, diff) = self.parts();
                 let mut tab_cx = TabContext { editor, diff };
                 if !tab.step_back(&mut tab_cx) {
+                    self.code_hidden = false;
                     self.focused = false;
                 }
             }
@@ -469,6 +543,7 @@ impl Sidebar {
             }
             (KeyCode::Enter, _) => {
                 if self.open_row(editor, Activation::Enter) {
+                    self.code_hidden = false;
                     self.focused = false;
                 }
             }
@@ -481,6 +556,7 @@ impl Sidebar {
                 if on_dir {
                     self.expand_dir(editor);
                 } else if self.open_row(editor, Activation::Enter) {
+                    self.code_hidden = false;
                     self.focused = false;
                 }
             }
@@ -592,43 +668,70 @@ impl Sidebar {
     pub fn handle_mouse(&mut self, event: &MouseEvent, cx: &mut commands::Context) -> EventResult {
         let editor = &mut cx.editor;
         let separator = self.area.right().saturating_sub(1);
-        let pressed = matches!(event.kind, MouseEventKind::Down(_));
-        let in_columns = self.tab == TabKind::Commits && self.commits.has_columns();
-        if pressed && in_columns && event.row > self.area.y {
-            let files = event.column >= self.area.x + self.area.width / 2;
-            let changed = self.commits.columns()[0].2 == files;
-            self.commits.focus_files(files);
-            if changed {
-                self.last_click = None;
+        let panes = self.stacked_areas();
+        let divider = panes.map(|panes| panes[1].y);
+        let pointer_selects_pane = matches!(
+            event.kind,
+            MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+        );
+        let mut pane_changed = false;
+        if pointer_selects_pane && event.column != separator {
+            if let Some(panes) = panes {
+                for (index, pane) in panes.iter().enumerate() {
+                    if event.row > pane.y && event.row < pane.bottom() {
+                        let files = index == 1;
+                        if self.commits.panes()[1].2 != files {
+                            self.commits.focus_files(files);
+                            self.last_click = None;
+                            pane_changed = true;
+                        }
+                    }
+                }
             }
         }
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) if event.column == separator => {
                 self.resizing = true;
             }
-            MouseEventKind::Drag(MouseButton::Left) if self.resizing => {
-                // The separator is the sidebar's last column, so it lands where the mouse is.
-                let total = self.area.width + editor.tree.area().width;
-                let most = total.saturating_sub(EDITOR_ROOM).max(MIN_WIDTH);
-                let wanted = event.column.saturating_sub(self.area.x) + 1;
-                let wanted = wanted.clamp(MIN_WIDTH, most);
-                self.width = Some(
-                    if self.tab == TabKind::Commits && self.commits.has_columns() {
-                        wanted / 2
-                    } else {
-                        wanted
-                    },
-                );
+            MouseEventKind::Down(MouseButton::Left) if divider == Some(event.row) => {
+                self.resizing_split = true;
             }
-            MouseEventKind::Up(MouseButton::Left) if self.resizing => {
-                self.resizing = false;
-                if let Some(width) = self.width {
-                    if let Err(err) = panel_width::save(WIDTH_FILE, width) {
-                        log::error!("Could not remember the sidebar's width: {err:#}");
-                        editor
-                            .set_error(format!("Could not remember the sidebar's width: {err:#}"));
-                    }
+            MouseEventKind::Drag(MouseButton::Left) if self.resizing_split => {
+                self.commit_layout.resize_split(self.area, event.row);
+            }
+            MouseEventKind::Drag(MouseButton::Left) if self.resizing => {
+                let total = if self.code_hidden() {
+                    self.area.width
+                } else {
+                    self.area.width + editor.tree.area().width
+                };
+                self.code_hidden = false;
+                let most = total.saturating_sub(EDITOR_ROOM).max(MIN_WIDTH);
+                let wanted = event.column.saturating_sub(self.area.x).saturating_add(1);
+                let wanted = wanted.clamp(MIN_WIDTH, most);
+                if self.tab == TabKind::Commits {
+                    self.commit_layout.width = Some(wanted);
+                } else {
+                    self.width = Some(wanted);
                 }
+            }
+            MouseEventKind::Up(MouseButton::Left) if self.resizing() => {
+                self.resizing = false;
+                self.resizing_split = false;
+                let result = if self.tab == TabKind::Commits {
+                    self.commit_layout.save()
+                } else if let Some(width) = self.width {
+                    panel_width::save(WIDTH_FILE, width)
+                } else {
+                    Ok(())
+                };
+                if let Err(err) = result {
+                    log::error!("Could not remember the panel layout: {err:#}");
+                    editor.set_error(format!("Could not remember the panel layout: {err:#}"));
+                }
+            }
+            MouseEventKind::Down(MouseButton::Right) if self.tab == TabKind::Commits => {
+                return editor::open_review_menu(event.row, event.column);
             }
             // The right button takes the row it lands on and offers what can be done to it.
             MouseEventKind::Down(MouseButton::Right) if self.active().edits_disk() => {
@@ -671,6 +774,11 @@ impl Sidebar {
                     }
                     return EventResult::Consumed(None);
                 }
+                let pane = self.active_area();
+                if event.row <= pane.y || event.row >= pane.bottom() {
+                    return EventResult::Consumed(None);
+                }
+                let line = (event.row - pane.y) as usize;
                 let Some(index) = self.active().list().row_at(line - 1) else {
                     return EventResult::Consumed(None);
                 };
@@ -690,18 +798,25 @@ impl Sidebar {
                     Activation::Click
                 };
                 if self.open_row(editor, how) {
+                    self.code_hidden = false;
                     self.focused = false;
                 }
             }
             MouseEventKind::ScrollDown => {
+                if event.row <= self.active_area().y || event.row >= self.active_area().bottom() {
+                    return EventResult::Ignored(None);
+                }
                 let lines = editor.config().scroll_lines;
-                if !self.scroll_by(editor, lines) {
+                if !self.scroll_by(editor, lines) && !pane_changed {
                     return EventResult::Ignored(None);
                 }
             }
             MouseEventKind::ScrollUp => {
+                if event.row <= self.active_area().y || event.row >= self.active_area().bottom() {
+                    return EventResult::Ignored(None);
+                }
                 let lines = editor.config().scroll_lines;
-                if !self.scroll_by(editor, -lines) {
+                if !self.scroll_by(editor, -lines) && !pane_changed {
                     return EventResult::Ignored(None);
                 }
             }
@@ -759,10 +874,19 @@ impl Sidebar {
 
     pub fn render(&mut self, area: Rect, surface: &mut Surface, editor: &mut Editor) {
         self.area = area;
+        if area.width < 2 || area.height < 2 {
+            return;
+        }
         let page = area.height.saturating_sub(1) as usize;
-        self.active_mut().list_mut().set_page(page);
         if self.tab == TabKind::Commits {
-            self.commits.set_page(page);
+            if let Some([history, files]) = self.stacked_areas() {
+                self.commits
+                    .set_pages((history.height - 1) as usize, (files.height - 1) as usize);
+            } else {
+                self.commits.set_pages(page, page);
+            }
+        } else {
+            self.active_mut().list_mut().set_page(page);
         }
         if !self.built {
             self.came_on_screen(editor);
@@ -820,7 +944,7 @@ impl Sidebar {
         }
 
         let tab = self.active();
-        if tab.rows().is_empty() && !(self.tab == TabKind::Commits && self.commits.has_columns()) {
+        if tab.rows().is_empty() && !(self.tab == TabKind::Commits && self.commits.has_files()) {
             if let Some(message) = tab.empty_message() {
                 let style = if message.is_error {
                     theme.get("error")
@@ -842,32 +966,30 @@ impl Sidebar {
             return;
         }
 
-        let split = self.tab == TabKind::Commits && self.commits.has_columns();
-        let columns = if split {
-            let middle = area.x + area.width / 2;
-            for y in area.y + 1..area.bottom() {
-                surface.set_string(middle - 1, y, "│", separator_style);
+        let stacked = self.stacked_areas();
+        let split = stacked.is_some();
+        let panes = if let Some([history_area, files_area]) = stacked {
+            for x in area.x..area.right().saturating_sub(1) {
+                surface.set_string(x, files_area.y, "─", separator_style);
             }
+            surface.set_string(area.right() - 1, files_area.y, "┤", separator_style);
+            surface.set_stringn(
+                area.x + 1,
+                files_area.y,
+                " Files ",
+                content_width.saturating_sub(1),
+                header_style,
+            );
             let [(history, history_list, history_focus), (files, files_list, files_focus)] =
-                self.commits.columns();
+                self.commits.panes();
             vec![
-                (
-                    history,
-                    history_list,
-                    history_focus,
-                    Rect::new(area.x, area.y, area.width / 2, area.height),
-                ),
-                (
-                    files,
-                    files_list,
-                    files_focus,
-                    Rect::new(middle, area.y, area.width - area.width / 2, area.height),
-                ),
+                (history, history_list, history_focus, history_area),
+                (files, files_list, files_focus, files_area),
             ]
         } else {
             vec![(tab.rows(), tab.list(), true, area)]
         };
-        for (rows, list, focused, area) in columns {
+        for (rows, list, focused, area) in panes {
             let rows = rows.iter().enumerate().skip(list.scroll).take(list.page);
             for (index, row) in rows {
                 let y = area.y + 1 + (index - list.scroll) as u16;
@@ -993,7 +1115,7 @@ fn open_changes_menu(row: u16, column: u16, root: PathBuf, file: git::ChangedFil
                     diff: &mut view.sidebar.diff,
                 };
                 if view.sidebar.changes.open(&mut tab_cx, Activation::Enter) == Outcome::Leave {
-                    view.sidebar.focused = false;
+                    view.sidebar.focus_code();
                 }
             }),
         )];

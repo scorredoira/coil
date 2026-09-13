@@ -420,6 +420,10 @@ impl MappableCommand {
         file_explorer_in_current_directory, "Open file explorer at current working directory",
         sidebar_focus, "Focus the sidebar, opening it if closed",
         sidebar_toggle, "Show or hide the sidebar",
+        review_commits_toggle, "Show or hide the commits panel",
+        review_code_toggle, "Show or hide the code panel while reviewing commits",
+        review_context_toggle, "Toggle full file context in the current commit diff",
+        keyboard_shortcuts, "Show a searchable reference of keyboard shortcuts",
         sidebar_reveal, "Reveal the current file in the sidebar's tree, focused",
         markdown_preview_toggle, "Show or hide the Markdown preview beside the file",
         markdown_preview_full, "Show or hide the Markdown preview on its own, filling the screen",
@@ -4746,6 +4750,15 @@ fn changed_file_picker(cx: &mut Context) {
             }
         });
     cx.push_layer(Box::new(overlaid(picker)));
+}
+
+pub fn keyboard_shortcuts(cx: &mut Context) {
+    cx.callback.push(Box::new(|compositor, _cx| {
+        let view = compositor.find::<ui::EditorView>().unwrap();
+        let map = view.keymaps.map();
+        let screen = ui::shortcuts::Shortcuts::new(&map);
+        compositor.push(Box::new(screen));
+    }));
 }
 
 pub fn command_palette(cx: &mut Context) {

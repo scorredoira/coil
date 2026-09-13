@@ -100,24 +100,24 @@ impl CommitsTab {
         }
     }
 
-    pub fn has_columns(&self) -> bool {
+    pub fn has_files(&self) -> bool {
         self.opened.is_some()
     }
 
     pub fn focus_files(&mut self, files: bool) {
-        self.files_focused = files && self.has_columns();
+        self.files_focused = files && self.has_files();
     }
 
-    pub fn columns(&self) -> [(&[Row], &List, bool); 2] {
+    pub fn panes(&self) -> [(&[Row], &List, bool); 2] {
         [
             (&self.history_rows, &self.history_list, !self.files_focused),
             (&self.rows, &self.list, self.files_focused),
         ]
     }
 
-    pub fn set_page(&mut self, page: usize) {
-        self.history_list.set_page(page);
-        self.list.set_page(page);
+    pub fn set_pages(&mut self, history: usize, files: usize) {
+        self.history_list.set_page(history);
+        self.list.set_page(files);
     }
 
     /// Lists the history of one file in place of the whole one.
@@ -343,7 +343,8 @@ impl CommitsTab {
     /// Shows the diff of what the cursor is on, if there is one to show.
     fn preview(&mut self, cx: &mut TabContext) {
         if let Some(target) = self.diff_target() {
-            cx.diff.ask(target);
+            let loader = cx.editor.syn_loader.load_full();
+            cx.diff.ask(target, loader);
         }
     }
 
@@ -664,7 +665,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn columns_keep_independent_positions_and_diff_targets() {
+    fn panes_keep_independent_positions_and_diff_targets() {
         let mut tab = CommitsTab::new(PathBuf::from("/repo"));
         let commit = Commit {
             hash: "abc123".into(),
@@ -697,6 +698,9 @@ mod tests {
             list_cursor: 1,
             list_scroll: 0,
         });
+        tab.set_pages(1, 3);
+        assert_eq!(tab.history_list.page, 1);
+        assert_eq!(tab.list.page, 3);
         tab.focus_files(true);
         assert_eq!(tab.rows().len(), 1);
         assert_eq!(tab.list().cursor, 0);
@@ -704,13 +708,13 @@ mod tests {
         tab.focus_files(false);
         assert_eq!(tab.rows().len(), 2);
         assert_eq!(tab.list().cursor, 1);
-        assert!(tab.has_columns());
-        assert_eq!(tab.columns()[1].0.len(), 1);
+        assert!(tab.has_files());
+        assert_eq!(tab.panes()[1].0.len(), 1);
         assert!(tab.diff_target().is_none());
         tab.follow = true;
         assert_eq!(tab.diff_target().unwrap().hash, "abc123");
         tab.set_showing(Showing::Repository);
-        assert!(!tab.has_columns());
+        assert!(!tab.has_files());
         assert!(!tab.files_focused);
     }
 }

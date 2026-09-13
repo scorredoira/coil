@@ -192,12 +192,22 @@ pub fn commit_files(root: &Path, hash: &str) -> Answer<(String, Vec<ChangedFile>
     Ok((prefix, files))
 }
 
-/// A commit's patch narrowed to `pathspecs`, under the commit's own header, as `git show`
-/// prints it.
-pub fn show(root: &Path, hash: &str, pathspecs: &[String]) -> Answer<String> {
+/// A canonical unified patch, independent of the user's prefix/context settings,
+/// narrowed to `pathspecs`. Review presentation is built separately from this transport.
+pub fn show(root: &Path, hash: &str, pathspecs: &[String], full_context: bool) -> Answer<String> {
+    let context = if full_context {
+        "--unified=2147483647"
+    } else {
+        "--unified=3"
+    };
     let mut args = vec![
         "show",
-        "--format=medium",
+        "--format=",
+        "--no-textconv",
+        "--no-relative",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        context,
         "--no-color",
         "--no-ext-diff",
         "-M",

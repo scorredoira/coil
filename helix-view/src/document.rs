@@ -218,6 +218,9 @@ pub struct Document {
     /// something with a name of its own.
     pub scratch_name: Option<String>,
 
+    /// Structured presentation of an immutable historical diff.
+    pub review: Option<crate::review::Review>,
+
     pub previous_diagnostic_ids: HashMap<LanguageServerId, String>,
 
     /// Annotations for LSP document color swatches
@@ -769,6 +772,7 @@ impl Document {
             focused_at: std::time::Instant::now(),
             readonly: false,
             scratch_name: None,
+            review: None,
             jump_labels: HashMap::new(),
             document_highlights: HashMap::new(),
             code_action_hints: HashSet::new(),
@@ -1464,6 +1468,9 @@ impl Document {
 
         let old_doc = self.text().clone();
         let changes = transaction.changes();
+        if self.review.is_some() && !changes.is_empty() {
+            return false;
+        }
         if !changes.apply(&mut self.text) {
             return false;
         }
@@ -1653,6 +1660,9 @@ impl Document {
         view_id: ViewId,
         emit_lsp_notification: bool,
     ) -> bool {
+        if self.review.is_some() && !transaction.changes().is_empty() {
+            return false;
+        }
         // store the state just before any changes are made. This allows us to undo to the
         // state just before a transaction was applied.
         if self.changes.is_empty() && !transaction.changes().is_empty() {
@@ -1685,6 +1695,9 @@ impl Document {
     }
 
     fn undo_redo_impl(&mut self, view: &mut View, undo: bool) -> bool {
+        if self.review.is_some() {
+            return false;
+        }
         if undo {
             self.append_changes_to_history(view);
         } else if !self.changes.is_empty() {
@@ -1770,6 +1783,9 @@ impl Document {
     }
 
     fn earlier_later_impl(&mut self, view: &mut View, uk: UndoKind, earlier: bool) -> bool {
+        if self.review.is_some() {
+            return false;
+        }
         if earlier {
             self.append_changes_to_history(view);
         } else if !self.changes.is_empty() {
@@ -2544,6 +2560,32 @@ mod test {
     use arc_swap::ArcSwap;
 
     use super::*;
+
+    #[test]
+    fn review_buffers_allow_selection_but_cannot_change_or_poison_history() {
+        let mut doc = Document::from(
+            Rope::from("original\n"),
+            None,
+            Arc::new(ArcSwap::new(Arc::new(Config::default()))),
+            Arc::new(ArcSwap::from_pointee(syntax::Loader::default())),
+        );
+        let view = ViewId::default();
+        doc.set_selection(view, Selection::point(0));
+        doc.review = Some(crate::review::Review::default());
+        let edit = Transaction::change(doc.text(), [(0, 0, Some("bad".into()))].into_iter());
+        assert!(!doc.apply(&edit, view));
+        assert!(!doc.apply_temporary(&edit, view));
+        assert_eq!(doc.text(), "original\n");
+        assert!(doc.changes.is_empty());
+        assert!(doc.old_state.is_none());
+        let selection = Transaction::new(doc.text()).with_selection(Selection::single(0, 4));
+        assert!(doc.apply(&selection, view));
+        assert_eq!(doc.selection(view).primary().head, 4);
+        // A new preview can replace the content after clearing its presentation data.
+        doc.review = None;
+        assert!(doc.apply(&edit, view));
+        assert_eq!(doc.text(), "badoriginal\n");
+    }
 
     #[test]
     fn changeset_to_changes_ignore_line_endings() {

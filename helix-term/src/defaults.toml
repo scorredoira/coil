@@ -33,6 +33,10 @@ enable = false
 # The keys of every mode go under [keys.all]: they are laid under normal, select and
 # insert, and a mode's own table wins over them.
 [keys.all]
+F1 = "keyboard_shortcuts"
+F4 = "review_context_toggle"
+F6 = "review_commits_toggle"
+F7 = "review_code_toggle"
 "C-," = "settings"
 # Back and forth through where you have been: Alt on its own never reaches a Mac terminal,
 # so this is the pair that does.

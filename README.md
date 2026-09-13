@@ -66,7 +66,12 @@ screen, and it stays where you scrolled it.
 The **Commits** tab lists the history. A click on a commit shows its whole
 diff in the editor; `Enter` or a double click lists the files it touched, the
 diff then following whatever the cursor is on: a directory, one file. `Esc`
-goes back.
+goes back. History sits above the changed files in one column; drag the divider
+to resize either pane, or its outer edge to adjust the column width.
+
+Diffs show filenames and highlighted code with old/new line numbers. `F4` toggles
+the full historical file around the changes. Right-click for these controls,
+or use `F6` / `F7` to show or hide commits / code.
 
 ![The history in the sidebar, the diff of the selected commit on the right](fork/screenshots/commits.png)
 
@@ -186,6 +191,9 @@ So the keys are the ones you already know:
 | `Ctrl-s` / `Ctrl-Shift-s` | Save / save under a name |
 | `Ctrl-p` | Open a file by name |
 | `Ctrl-Shift-p` | The command palette |
+| `F1` | Searchable keyboard shortcut reference (including sidebar controls) |
+| `F4` | Commit diff: full file context / changed sections |
+| `F6` / `F7` | Show or hide the commits / code panel |
 | `Ctrl-f` / `F3` / `Shift-F3` | Search in this file / next match / previous |
 | `Ctrl-Shift-f` | Search and replace across the project |
 | `Ctrl-g` | Go to a line |
@@ -261,6 +269,16 @@ once and is written to `~/.config/coil/config.toml` as it is made — only the l
 it touches, so the rest of the file, comments included, stays as you wrote it.
 
 ![The settings on screen, over the file being edited](fork/screenshots/settings.png)
+
+## Find a shortcut
+
+`F1` opens a centered reference over the editor. Type to search your configured
+shortcuts, use `Tab` to filter by mode or sidebar, and `Esc` to close it.
+
+![The shortcut reference filtered to code review controls](fork/screenshots/shortcuts.png)
+
+For a temporary visit to normal mode, open `Ctrl-Shift-P`, run `normal_mode`,
+and press `i` when you want to type again. This leaves your settings alone.
 
 ## Coming from Helix
 
