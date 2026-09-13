@@ -699,7 +699,7 @@ mod tests {
 
     #[test]
     fn a_file_is_not_created_over_one_that_exists() {
-        let dir = std::env::temp_dir().join(format!("coil-files-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("sid-files-{}", std::process::id()));
         let path = dir.join("made/a.txt");
         create_file(&path).unwrap();
         assert!(path.is_file());

@@ -2920,7 +2920,7 @@ fn search_panel(cx: &mut Context, scope: SearchScope) {
                     filter_picker_entry(entry, &absolute_root, dedup_symlinks)
                 })
                 .add_custom_ignore_filename(helix_loader::config_dir().join("ignore"))
-                .add_custom_ignore_filename(".coil/ignore")
+                .add_custom_ignore_filename(".sid/ignore")
                 .overrides(overrides)
                 .build_parallel()
                 .run(|| {

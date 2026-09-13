@@ -1,21 +1,21 @@
 #!/bin/sh
-# Download and install the complete native Coil release without a compiler.
+# Download and install the complete native sid release without a compiler.
 set -eu
-repo=scorredoira/coil
+repo=scorredoira/sid
 case $(uname -s) in Linux) os=linux ;; Darwin) os=macos ;; *) echo 'Supported: Linux and macOS' >&2; exit 1 ;; esac
 case $(uname -m) in x86_64) arch=x86_64 ;; arm64|aarch64) arch=aarch64 ;; *) echo 'Supported: x86_64 and ARM64' >&2; exit 1 ;; esac
-version=${COIL_VERSION:-latest}
+version=${SID_VERSION:-latest}
 if [ "$version" = latest ]; then
     base="https://github.com/$repo/releases/latest/download"
 else
-    case "$version" in *[!a-zA-Z0-9.-]*|'') echo 'Invalid COIL_VERSION' >&2; exit 1 ;; esac
+    case "$version" in *[!a-zA-Z0-9.-]*|'') echo 'Invalid SID_VERSION' >&2; exit 1 ;; esac
     base="https://github.com/$repo/releases/download/$version"
 fi
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 curl -fLsS "$base/SHA256SUMS" -o "$work/SHA256SUMS"
 asset=$(awk -v suffix="-$arch-$os.tar.gz" 'substr($2, length($2)-length(suffix)+1)==suffix {print $2}' "$work/SHA256SUMS")
-case "$asset" in coil-v*-"$arch"-"$os".tar.gz) ;; *) echo 'Release has no matching archive' >&2; exit 1 ;; esac
+case "$asset" in sid-v*-"$arch"-"$os".tar.gz) ;; *) echo 'Release has no matching archive' >&2; exit 1 ;; esac
 case "$asset" in *[!a-zA-Z0-9_.-]*) echo 'Invalid asset name' >&2; exit 1 ;; esac
 curl -fLsS "$base/$asset" -o "$work/$asset"
 (cd "$work"

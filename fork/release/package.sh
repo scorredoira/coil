@@ -6,9 +6,9 @@ version=${2:?version required}
 [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
-name="coil-$version-$platform"
+name="sid-$version-$platform"
 mkdir -p "$stage/$name/runtime" dist
-cp target/release/coil LICENSE "$stage/$name/"
+cp target/release/sid LICENSE "$stage/$name/"
 cp -R runtime/tutor runtime/queries runtime/themes "$stage/$name/runtime/"
 mkdir -p "$stage/$name/runtime/grammars"
 for grammar in runtime/grammars/*; do

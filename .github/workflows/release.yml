@@ -53,14 +53,14 @@ jobs:
         if: runner.os == 'Linux'
         run: echo 'CXXFLAGS=-static-libstdc++ -static-libgcc' >> "$GITHUB_ENV"
       - name: Build binary and all grammars
-        run: cargo build --release --locked -p helix-term --bin coil
+        run: cargo build --release --locked -p helix-term --bin sid
       - name: Test
         env:
           HELIX_DISABLE_AUTO_GRAMMAR_BUILD: '1'
         run: cargo test --locked -p helix-term -p helix-view --lib
       - name: Check Linux binary and grammar compatibility
         if: runner.os == 'Linux'
-        run: python3 fork/release/check-linux-abi.py target/release/coil runtime/grammars
+        run: python3 fork/release/check-linux-abi.py target/release/sid runtime/grammars
       - name: Package
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -74,18 +74,18 @@ jobs:
         run: |
           smoke=$(mktemp -d)
           tar -xzf dist/*.tar.gz -C "$smoke"
-          app=$(find "$smoke" -name coil -type f)
+          app=$(find "$smoke" -name sid -type f)
           "$app" --version
           "$app" --health rust
-          COIL_PREFIX="$smoke/install" sh "$(dirname "$app")/install.sh"
-          "$smoke/install/bin/coil" --version
+          SID_PREFIX="$smoke/install" sh "$(dirname "$app")/install.sh"
+          "$smoke/install/bin/sid" --version
           if [[ "$RUNNER_OS" == Linux ]]; then
             XDG_CACHE_HOME="$smoke/cache" dist/*.run --version
             XDG_CACHE_HOME="$smoke/cache" dist/*.run --version
           fi
       - uses: actions/upload-artifact@v4
         with:
-          name: coil-${{ matrix.platform }}
+          name: sid-${{ matrix.platform }}
           path: dist/*
           if-no-files-found: error
 
@@ -104,7 +104,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: coil-${{ matrix.platform }}
+          name: sid-${{ matrix.platform }}
           path: dist
           run-id: ${{ inputs.artifacts_run_id || github.run_id }}
           github-token: ${{ github.token }}
@@ -114,9 +114,9 @@ jobs:
           tar -xzf dist/*.tar.gz -C extracted
           docker run --rm -v "$PWD:/work:ro" ubuntu:20.04 sh -eu -c '
             getconf GNU_LIBC_VERSION
-            COIL_PREFIX=/tmp/installed sh /work/extracted/*/install.sh
-            /tmp/installed/bin/coil --version
-            /tmp/installed/bin/coil --health rust > /tmp/health
+            SID_PREFIX=/tmp/installed sh /work/extracted/*/install.sh
+            /tmp/installed/bin/sid --version
+            /tmp/installed/bin/sid --health rust > /tmp/health
             cat /tmp/health
             grep -q "Tree-sitter parser:.*✓" /tmp/health
             sh /work/dist/*.run --version
@@ -133,7 +133,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          pattern: coil-*
+          pattern: sid-*
           merge-multiple: true
           path: dist
           run-id: ${{ inputs.artifacts_run_id || github.run_id }}
@@ -149,6 +149,6 @@ jobs:
           test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$(gh run view "$ARTIFACTS_RUN_ID" --json headSha --jq .headSha)"
           cd dist
           sha256sum *.tar.gz *.run > SHA256SUMS
-          gh release create "$RELEASE_TAG" --verify-tag --title "Coil $RELEASE_TAG" \
+          gh release create "$RELEASE_TAG" --verify-tag --title "sid $RELEASE_TAG" \
             --notes-file ../fork/release/README.md --draft ./*
           gh release edit "$RELEASE_TAG" --draft=false --latest

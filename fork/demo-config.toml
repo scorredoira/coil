@@ -1,4 +1,4 @@
-# The configuration the screenshots are taken with, laid over Coil's defaults:
+# The configuration the screenshots are taken with, laid over sid's defaults:
 # one fixed theme, so the pictures do not follow the terminal's background.
 theme = "github_dark"
 

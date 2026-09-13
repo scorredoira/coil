@@ -16,6 +16,83 @@ static CONFIG_FILE: once_cell::sync::OnceCell<PathBuf> = once_cell::sync::OnceCe
 
 static LOG_FILE: once_cell::sync::OnceCell<PathBuf> = once_cell::sync::OnceCell::new();
 
+/// The editor was called Coil before it was sid: the configuration and the remembered state
+/// it kept under that name move to the new one when sid starts. What sid already has of its
+/// own is never overwritten, and the old directory goes once nothing is left in it. The
+/// cache is left behind; it is only a cache.
+pub fn migrate_from_coil() {
+    let Ok(strategy) = choose_base_strategy() else {
+        return;
+    };
+    for base in [strategy.config_dir(), strategy.data_dir()] {
+        let old = base.join("coil");
+        if old.is_dir() {
+            move_entries(&old, &base.join("sid"));
+        }
+    }
+}
+
+/// Moves what `old` holds into `new`, entry by entry, into directories both have.
+fn move_entries(old: &Path, new: &Path) {
+    let moved = std::fs::create_dir_all(new).and_then(|()| {
+        for entry in std::fs::read_dir(old)? {
+            let entry = entry?;
+            let target = new.join(entry.file_name());
+            let is_dir = entry.file_type()?.is_dir();
+            if !target.exists() && target.symlink_metadata().is_err() {
+                std::fs::rename(entry.path(), &target)?;
+            } else if is_dir && target.is_dir() {
+                move_entries(&entry.path(), &target);
+            }
+        }
+        // Only an empty directory is removed: anything that could not move stays.
+        let _ = std::fs::remove_dir(old);
+        Ok(())
+    });
+    if let Err(err) = moved {
+        eprintln!(
+            "Could not move {} to {}: {err}",
+            old.display(),
+            new.display()
+        );
+    }
+}
+
+#[cfg(test)]
+mod migrate_tests {
+    use super::move_entries;
+    use std::fs;
+
+    #[test]
+    fn old_entries_move_without_overwriting_new_ones() {
+        let base = std::env::temp_dir().join(format!("sid-migrate-{}", std::process::id()));
+        let (old, new) = (base.join("coil"), base.join("sid"));
+        fs::create_dir_all(old.join("sessions")).unwrap();
+        fs::create_dir_all(new.join("sessions")).unwrap();
+        fs::write(old.join("config.toml"), "old").unwrap();
+        fs::write(old.join("sessions/a.toml"), "a").unwrap();
+        fs::write(old.join("sessions/b.toml"), "old b").unwrap();
+        fs::write(new.join("sessions/b.toml"), "new b").unwrap();
+
+        move_entries(&old, &new);
+
+        assert_eq!(fs::read_to_string(new.join("config.toml")).unwrap(), "old");
+        assert_eq!(
+            fs::read_to_string(new.join("sessions/a.toml")).unwrap(),
+            "a"
+        );
+        assert_eq!(
+            fs::read_to_string(new.join("sessions/b.toml")).unwrap(),
+            "new b"
+        );
+        assert_eq!(
+            fs::read_to_string(old.join("sessions/b.toml")).unwrap(),
+            "old b"
+        );
+        fs::remove_dir_all(base).unwrap();
+    }
+}
+
 pub fn initialize_config_file(specified_file: Option<PathBuf>) {
     let config_file = specified_file.unwrap_or_else(default_config_file);
     ensure_parent_dir(&config_file);
@@ -34,7 +111,7 @@ pub fn initialize_log_file(specified_file: Option<PathBuf>) {
 ///
 /// 1. sibling directory to `CARGO_MANIFEST_DIR` (if environment variable is set)
 /// 2. subdirectory of user config directory (always included)
-/// 3. `COIL_RUNTIME` (if environment variable is set)
+/// 3. `SID_RUNTIME` (if environment variable is set)
 /// 4. `HELIX_DEFAULT_RUNTIME` (if environment variable is set *at build time*)
 /// 5. subdirectory of path to the executable (always included)
 ///
@@ -53,7 +130,7 @@ fn prioritize_runtime_dirs() -> Vec<PathBuf> {
     let conf_rt_dir = config_dir().join(RT_DIR);
     rt_dirs.push(conf_rt_dir);
 
-    if let Ok(dir) = std::env::var("COIL_RUNTIME") {
+    if let Ok(dir) = std::env::var("SID_RUNTIME") {
         let dir = path::expand_tilde(Path::new(&dir));
         rt_dirs.push(path::normalize(dir));
     }
@@ -121,7 +198,7 @@ pub fn config_dir() -> PathBuf {
     // TODO: allow env var override
     let strategy = choose_base_strategy().expect("Unable to find the config directory!");
     let mut path = strategy.config_dir();
-    path.push("coil");
+    path.push("sid");
     path
 }
 
@@ -129,14 +206,14 @@ pub fn cache_dir() -> PathBuf {
     // TODO: allow env var override
     let strategy = choose_base_strategy().expect("Unable to find the cache directory!");
     let mut path = strategy.cache_dir();
-    path.push("coil");
+    path.push("sid");
     path
 }
 
 pub fn data_dir() -> PathBuf {
     let strategy = choose_base_strategy().expect("Unable to find the data directory!");
     let mut path = strategy.data_dir();
-    path.push("coil");
+    path.push("sid");
     path
 }
 
@@ -149,11 +226,11 @@ pub fn log_file() -> PathBuf {
 }
 
 pub fn workspace_config_file() -> PathBuf {
-    find_workspace().0.join(".coil").join("config.toml")
+    find_workspace().0.join(".sid").join("config.toml")
 }
 
 pub fn workspace_lang_config_file() -> PathBuf {
-    find_workspace().0.join(".coil").join("languages.toml")
+    find_workspace().0.join(".sid").join("languages.toml")
 }
 
 pub fn lang_config_file() -> PathBuf {
@@ -161,7 +238,7 @@ pub fn lang_config_file() -> PathBuf {
 }
 
 pub fn default_log_file() -> PathBuf {
-    cache_dir().join("coil.log")
+    cache_dir().join("sid.log")
 }
 
 /// Merge two TOML documents, merging values from `right` onto `left`
@@ -265,7 +342,7 @@ pub fn find_workspace_in(dir: impl AsRef<Path>) -> (PathBuf, bool) {
         if ancestor.join(".git").exists()
             || ancestor.join(".svn").exists()
             || ancestor.join(".jj").exists()
-            || ancestor.join(".coil").exists()
+            || ancestor.join(".sid").exists()
         {
             return (ancestor.to_owned(), false);
         }

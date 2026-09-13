@@ -2,20 +2,50 @@
 
 <img alt="" height="128" src="fork/logo.svg">
 
-# Coil
+# sid
 
-A fork of [Helix](https://github.com/helix-editor/helix)
+**A terminal code editor you already know how to use.**
 
 </div>
 
-Helix's modal editing, with the things you would otherwise leave the editor
-for: a sidebar that stays on screen, search and replace across the project,
-git's changes, history and blame, Markdown as it reads, and a mouse that works
-where you point it.
-Everything else is Helix as it is — its keys, its language servers, its
-tree-sitter — and Coil follows its `master`.
+sid is a code editor that runs in the terminal and behaves like the editors on
+your desktop: you open a file and type. `Ctrl-c` copies, `Ctrl-z` undoes,
+`Ctrl-s` saves, `Shift` and an arrow select, the mouse clicks, scrolls and
+drags. There are no modes to learn and nothing to memorise before you can
+write a line.
+
+Around the text it has what you would otherwise leave the editor for: a file
+tree beside your code, git's changes, history and blame, search and replace
+across the project, and Markdown rendered as it reads. Underneath there are
+language servers and tree-sitter, so completion, go to definition, rename and
+diagnostics work as they do in a full IDE, with highlighting for hundreds of
+languages.
 
 ![The file tree beside two open files](fork/screenshots/tree.png)
+
+## Who it is for
+
+- **People who work in the terminal, or on machines they reach over SSH**, and
+  want a real editor there without learning vim first. sid is one file to
+  install, needs no compiler or runtime on the machine, and copies to your own
+  clipboard across SSH in terminals that allow it.
+- **People who like modern editors' keys and panels** but want something that
+  starts instantly and runs anywhere a terminal does.
+- **Vim and Helix users** are welcome too: modal editing is all still there,
+  one setting away. It is just not what you get by default.
+
+## Why it exists
+
+Terminal editors tend to make you choose. The powerful ones are modal: you
+learn a new way of typing before you can be productive. The simple ones are
+easy but stop at editing text: no tree, no git, no language server.
+
+sid doesn't choose. It began as a fork of [Helix](https://github.com/helix-editor/helix)
+— a fast, modern modal editor with excellent language support — to keep that
+engine and change everything a newcomer meets: it opens in insert mode and stays
+there, uses the keys every other editor uses, and puts the tools of a desktop IDE
+on the screen. By now it is a different editor, so it has a name of its own:
+**sid**, short and easy to type.
 
 ## A sidebar file tree
 
@@ -23,7 +53,7 @@ The editor's own keys — `Ctrl-q`, `Ctrl-s`, `F12` — work while the sidebar h
 the focus.
 
 `Ctrl-b` shows or hides it and `Ctrl-Shift-e` focuses it; started on a file
-(`coil foo.ts`), the editor opens without it. It follows the file you are
+(`sid foo.ts`), the editor opens without it. It follows the file you are
 editing, and `Ctrl-Shift-r` takes you to that file in the tree from wherever
 you are. Inside it the arrows move, `Enter`
 opens, and **typing walks to the file whose name you are typing**, the way an
@@ -75,20 +105,22 @@ or use `F6` / `F7` to show or hide commits / code.
 
 ![The history in the sidebar, the diff of the selected commit on the right](fork/screenshots/commits.png)
 
-`Space H` narrows the history to the current file, following renames.
+`file_history` in the command palette (`Ctrl-Shift-p`) narrows the history to
+the current file, following renames.
 
 ![The history of one file](fork/screenshots/history.png)
 
 ## Who changed this line
 
-`Space B` says who last changed the line under the cursor, when, and in which
-commit; press it again to open that commit in the sidebar.
+`blame_line` in the command palette (`Ctrl-Shift-p`) says who last changed the
+line under the cursor, when, and in which commit; run it again to open that
+commit in the sidebar.
 
 ![Who changed the line under the cursor, in the status line](fork/screenshots/blame.png)
 
 ## Search and replace across the project
 
-`Space Space` (or `Space /`) opens a panel with a replace box and
+`Ctrl-Shift-f` opens a panel with a replace box and
 include/exclude filters (the filters are remembered), switches for case, whole
 word, regex and preserving case — the panel's border says their keys — and
 each result shows the line it matched. `Alt-a` replaces every match on
@@ -150,7 +182,7 @@ the definition of what you clicked. Letting the pointer rest on a word shows wha
 the language server knows about it, and on a problem shows the problem first;
 moving away closes it.
 
-Opening the editor on a project — `coil`, or `coil .` — reopens what it had
+Opening the editor on a project — `sid`, or `sid .` — reopens what it had
 open: the tabs in their order, the splits as they were, each with its cursor
 where it was, and the one you were on in front. Naming a file opens that file
 alone, and the settings screen turns it off altogether. Splits resize by dragging the line between two
@@ -162,7 +194,7 @@ and over the preview scrolls the preview.
 
 ## Ready as installed
 
-**Coil opens where you type.** It starts in insert mode and stays there: moving
+**sid opens where you type.** It starts in insert mode and stays there: moving
 to another file or another split no longer drops you into normal mode, and
 `Escape` closes what is open rather than changing the mode you are in. Helix's
 modal editing is all still here — the first line of the settings screen
@@ -253,7 +285,7 @@ typing, the mode colours the status line, the theme follows the terminal's
 light or dark background, the file picker shows ignored files too, and
 completion offers only what the language server suggests.
 
-Any of it can be changed in `~/.config/coil/config.toml`, which is laid over
+Any of it can be changed in `~/.config/sid/config.toml`, which is laid over
 these defaults: write only what you want different.
 
 Copying over SSH reaches your own machine's clipboard when the terminal
@@ -265,7 +297,7 @@ its settings.
 `Ctrl-,` opens the handful of settings a newcomer reaches for, each showing what
 it is set to now: wrapping, saving, line numbers, tabs, the mouse. Up and down
 walk them, `Space` or a click changes the one in focus, and the change applies at
-once and is written to `~/.config/coil/config.toml` as it is made — only the line
+once and is written to `~/.config/sid/config.toml` as it is made — only the line
 it touches, so the rest of the file, comments included, stays as you wrote it.
 
 ![The settings on screen, over the file being edited](fork/screenshots/settings.png)
@@ -280,40 +312,40 @@ shortcuts, use `Tab` to filter by mode or sidebar, and `Esc` to close it.
 For a temporary visit to normal mode, open `Ctrl-Shift-P`, run `normal_mode`,
 and press `i` when you want to type again. This leaves your settings alone.
 
-## Coming from Helix
+## If you know Helix
 
 The keys are Helix's, and so is its documentation:
 [docs.helix-editor.com](https://docs.helix-editor.com/) applies as it is —
 except for the keys above: `Ctrl-c` copies (comment with `Space c`), `Ctrl-a`
 selects everything (incrementing a number keeps no key), `Ctrl-s` saves and
 `Ctrl-f` searches the file (a page down is `PageDown`) — and that while typing
-a selection is replaced by what you type, which Helix leaves alone. Coil keeps
+a selection is replaced by what you type, which Helix leaves alone. sid keeps
 its own files, so the two never mix:
 
-| | Helix | Coil |
+| | Helix | sid |
 |---|---|---|
-| Command | `hx` | `coil` |
-| Configuration | `~/.config/helix/` | `~/.config/coil/` |
-| Per project | `.helix/` | `.coil/` |
-| Runtime override | `HELIX_RUNTIME` | `COIL_RUNTIME` |
+| Command | `hx` | `sid` |
+| Configuration | `~/.config/helix/` | `~/.config/sid/` |
+| Per project | `.helix/` | `.sid/` |
+| Runtime override | `HELIX_RUNTIME` | `SID_RUNTIME` |
 
-To bring your configuration along: `cp -r ~/.config/helix ~/.config/coil`.
+To bring your configuration along: `cp -r ~/.config/helix ~/.config/sid`.
 
 ## Installing
 
-Download the [latest release](https://github.com/scorredoira/coil/releases/latest)
+Download the [latest release](https://github.com/scorredoira/sid/releases/latest)
 for Linux x86_64/ARM64 or macOS Apple Silicon, or let the installer select it:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/scorredoira/coil/master/fork/install.sh -o /tmp/install-coil.sh
-sh /tmp/install-coil.sh
+curl -fsSL https://raw.githubusercontent.com/scorredoira/sid/master/fork/install.sh -o /tmp/install-sid.sh
+sh /tmp/install-sid.sh
 export PATH="$HOME/.local/bin:$PATH"
-coil
+sid
 ```
 
 This installs the complete package under `~/.local`, verifies the archive's
 SHA-256 checksum and preserves your configuration. Repeat to update. No Rust,
-Homebrew or compiler is needed on the destination machine. To keep Coil on PATH in future terminals, run this once for macOS's default
+Homebrew or compiler is needed on the destination machine. To keep sid on PATH in future terminals, run this once for macOS's default
 zsh shell:
 
 ```sh
@@ -327,16 +359,16 @@ printf '\nexport PATH="$HOME/.local/bin:$PATH"\n' >> ~/.bashrc
 ```
 
 Language servers and formatters
-are installed separately; `coil --health` shows which are available.
+are installed separately; `sid --health` shows which are available.
 
 For servers, the Linux `.run` asset is a single transferable file: rename it
-`coil`, run `chmod +x coil`, and copy it to a directory on PATH. It includes the
+`sid`, run `chmod +x sid`, and copy it to a directory on PATH. It includes the
 same runtime, extracted to a user cache on first use, with no FUSE requirement.
 Linux builds require glibc 2.28+ (Ubuntu 20.04+, Debian 10+); macOS builds require
 macOS 14+. Choose the asset matching the machine's architecture.
 
-To use it as your default editor, set `EDITOR=coil` and `VISUAL=coil`. An optional
-`alias vim=coil` affects interactive use; Coil does not emulate Vim's CLI.
+To use it as your default editor, set `EDITOR=sid` and `VISUAL=sid`. An optional
+`alias vim=sid` affects interactive use; sid does not emulate Vim's CLI.
 
 ### Building from source
 
@@ -345,16 +377,16 @@ compiler, which builds the tree-sitter grammars (on macOS,
 `xcode-select --install`).
 
 ```sh
-git clone https://github.com/scorredoira/coil
-cd coil
+git clone https://github.com/scorredoira/sid
+cd sid
 cargo install --path helix-term --locked
-mkdir -p ~/.config/coil
-ln -sfn "$PWD/runtime" ~/.config/coil/runtime
+mkdir -p ~/.config/sid
+ln -sfn "$PWD/runtime" ~/.config/sid/runtime
 ```
 
 The first build fetches and compiles every grammar, so it takes a few
-minutes. `coil` lands in `~/.cargo/bin`, which rustup puts on your `PATH`;
-`coil --health` says where it reads its configuration from. The `runtime`
+minutes. `sid` lands in `~/.cargo/bin`, which rustup puts on your `PATH`;
+`sid --health` says where it reads its configuration from. The `runtime`
 link keeps the clone as the source of the grammars and themes, so leave it
 where it is.
 
@@ -362,9 +394,9 @@ To update: `git pull` in the clone, then the `cargo install` line again.
 
 ## Following Helix
 
-Coil is rebased onto Helix's `master` regularly, so its fixes and features
-arrive here too. Problems with Coil belong in
-[this repository's issues](https://github.com/scorredoira/coil/issues), not
+sid is rebased onto Helix's `master` regularly, so Helix's fixes and features
+arrive here too. Problems with sid belong in
+[this repository's issues](https://github.com/scorredoira/sid/issues), not
 in Helix's.
 
 ## License

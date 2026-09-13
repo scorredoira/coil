@@ -118,7 +118,7 @@ impl Config {
     }
 
     pub fn load_default() -> Result<Config, ConfigLoadError> {
-        // No config.toml is not an error: Coil's defaults are a configuration of their own.
+        // No config.toml is not an error: sid's defaults are a configuration of their own.
         let user_config = match fs::read_to_string(helix_loader::config_file()) {
             Ok(text) => text,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -157,10 +157,10 @@ impl Config {
     }
 }
 
-/// Coil's defaults, which the user's config.toml is laid over.
+/// sid's defaults, which the user's config.toml is laid over.
 const DEFAULTS: &str = include_str!("defaults.toml");
 
-/// The user's config.toml laid over Coil's defaults, as the text `Config::load` reads.
+/// The user's config.toml laid over sid's defaults, as the text `Config::load` reads.
 fn over_defaults(user: &str) -> Result<String, ConfigLoadError> {
     let mut defaults: toml::Value = toml::from_str(DEFAULTS).expect("defaults.toml is valid TOML");
     spread_all_modes(&mut defaults);
@@ -262,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn with_no_config_file_the_defaults_are_coils() {
+    fn with_no_config_file_the_defaults_are_sids() {
         let config = Config::load_test(&over_defaults("").unwrap());
 
         assert_eq!(config.editor.soft_wrap.enable, Some(true));
@@ -410,12 +410,12 @@ C-h = "no_op"
             command_at(&config, Mode::Normal, &["space", "x"]),
             "file_picker"
         );
-        // A key the user added under space leaves Coil's others there.
+        // A key the user added under space leaves sid's others there.
         assert_eq!(
             command_at(&config, Mode::Normal, &["space", "space"]),
             "global_search"
         );
-        // And what neither names stays Coil's.
+        // And what neither names stays sid's.
         assert!(!config.editor.file_picker.git_ignore);
         assert!(matches!(
             config.editor.bufferline,

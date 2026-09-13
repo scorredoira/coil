@@ -1,11 +1,11 @@
 //! Workspace trust.
 //!
-//! Helix can load workspace-local configuration (`.coil/`) and launch language servers, both of
+//! Helix can load workspace-local configuration (`.sid/`) and launch language servers, both of
 //! which can execute arbitrary code. By default these are gated behind explicit user trust granted
 //! per-workspace.
 //!
 //! Trust is granted with `:workspace-trust` (or the popup) and revoked with `:workspace-untrust`.
-//! A grant snapshots a hash of every file under `.coil/`. If those files change later the
+//! A grant snapshots a hash of every file under `.sid/`. If those files change later the
 //! workspace becomes [`TrustStatus::Stale`] and local config is no longer loaded until the user
 //! re-runs `:workspace-trust`. Language servers continue to launch under stale trust because the
 //! binaries are configured globally and were not part of the changed surface.
@@ -33,7 +33,7 @@
 //! time. A workspace whose path matches one of these globs is implicitly trusted for everything.
 //!
 //! This is deliberately weaker than an explicit `:workspace-trust` grant and is discouraged: it
-//! bypasses the `.coil/` hash pin (changes to local config are never re-checked) and it trusts any
+//! bypasses the `.sid/` hash pin (changes to local config are never re-checked) and it trusts any
 //! repository that happens to land under a matching directory, including ones cloned there later. An
 //! explicit exclude still wins over a matching glob.
 
@@ -58,7 +58,7 @@ pub enum TrustQuery {
     Lsp,
     /// Query debug adapter permissions
     Dap,
-    /// Query whether `.coil/` config can be loaded
+    /// Query whether `.sid/` config can be loaded
     LocalConfig,
     /// Query whether git integration can trust the .git/config
     Git,
@@ -70,7 +70,7 @@ pub enum TrustStatus {
     Trusted,
     /// No trust decision has been made (and no implicit trust applies).
     Untrusted,
-    /// Workspace was previously trusted, but the `.coil/` tree has changed since the grant — the
+    /// Workspace was previously trusted, but the `.sid/` tree has changed since the grant — the
     /// user should re-trust before local config is re-loaded. LSP launches may still proceed under
     /// stale trust because they use the (unchanged) globally-configured binaries.
     Stale,
@@ -191,7 +191,7 @@ impl WorkspaceTrust {
     }
 
     /// Replace the configuration in-place. Clears the trust cache so the next query re-reads from
-    /// disk. This catches external mutations to `.coil/` that happened while helix was running
+    /// disk. This catches external mutations to `.sid/` that happened while helix was running
     /// (the editor's in-memory cache would otherwise keep returning a stale `Trusted` even though
     /// `compute_workspace_hash` would now produce a different digest). Used by `:config-reload`.
     ///
@@ -205,7 +205,7 @@ impl WorkspaceTrust {
 
     /// Raw on-disk trust status for `workspace`, ignoring implicit-trust-level shortcuts and the
     /// `demote_for_query` mapping. Use this when you need to distinguish *Stale* (was trusted,
-    /// `.coil/` changed) from *Untrusted* (never trusted)
+    /// `.sid/` changed) from *Untrusted* (never trusted)
     pub fn status(&self, workspace: &Path) -> TrustStatus {
         self.entry(workspace).status
     }
@@ -305,7 +305,7 @@ impl WorkspaceTrust {
             || !self.query(workspace, TrustQuery::Dap).is_trusted()
     }
 
-    /// Mark `workspace` trusted. Snapshots the current `.coil/` hash.
+    /// Mark `workspace` trusted. Snapshots the current `.sid/` hash.
     pub fn trust(&self, workspace: &Path) {
         let hash = compute_workspace_hash(workspace);
         let has_local_config = has_local_config(workspace);
@@ -364,12 +364,12 @@ impl WorkspaceTrust {
 }
 
 fn has_local_config(workspace: &Path) -> bool {
-    workspace.join(".coil").join("config.toml").exists()
-        || workspace.join(".coil").join("languages.toml").exists()
+    workspace.join(".sid").join("config.toml").exists()
+        || workspace.join(".sid").join("languages.toml").exists()
 }
 
 fn demote_for_query(status: TrustStatus, query: TrustQuery) -> TrustStatus {
-    // Stale workspaces have their `.coil/` config changed since trust was granted. LSP launches
+    // Stale workspaces have their `.sid/` config changed since trust was granted. LSP launches
     // still rely on globally-configured binaries that weren't part of the changed surface, so they
     // remain Trusted; other queries demote to Untrusted until the user re-trusts.
     match (status, query) {
@@ -509,11 +509,11 @@ fn remove_entry(workspace: &Path) {
 
 // ---------- hashing ----------
 
-/// SHA-256 of all files under `.coil/`, used to detect changes to local config after trust was
-/// granted. Returns `None` if `.coil/` is absent or has no files, so a workspace with no local
+/// SHA-256 of all files under `.sid/`, used to detect changes to local config after trust was
+/// granted. Returns `None` if `.sid/` is absent or has no files, so a workspace with no local
 /// config can still be trusted.
 pub fn compute_workspace_hash(workspace: &Path) -> Option<String> {
-    let helix_dir = workspace.join(".coil");
+    let helix_dir = workspace.join(".sid");
     if !helix_dir.is_dir() {
         return None;
     }
@@ -594,9 +594,9 @@ mod test {
         let workspace = dir.path();
 
         let empty = compute_workspace_hash(workspace);
-        assert_eq!(empty, None, ".coil/ absent should hash to None");
+        assert_eq!(empty, None, ".sid/ absent should hash to None");
 
-        write_file(&workspace.join(".coil").join("config.toml"), "a = 1");
+        write_file(&workspace.join(".sid").join("config.toml"), "a = 1");
         let h1 = compute_workspace_hash(workspace).expect("has files");
         assert!(h1.starts_with("sha256:"));
 
@@ -605,12 +605,12 @@ mod test {
         assert_eq!(h1, h1b);
 
         // Different content → different hash
-        write_file(&workspace.join(".coil").join("config.toml"), "a = 2");
+        write_file(&workspace.join(".sid").join("config.toml"), "a = 2");
         let h2 = compute_workspace_hash(workspace).expect("has files");
         assert_ne!(h1, h2);
 
         // Added file → different hash
-        write_file(&workspace.join(".coil").join("languages.toml"), "");
+        write_file(&workspace.join(".sid").join("languages.toml"), "");
         let h3 = compute_workspace_hash(workspace).expect("has files");
         assert_ne!(h2, h3);
     }
@@ -636,7 +636,7 @@ mod test {
         assert!(!trust.workspace_restricted(workspace));
 
         // Untrusted + .helix/config.toml exists → indicator should show.
-        write_file(&workspace.join(".coil").join("config.toml"), "a = 1");
+        write_file(&workspace.join(".sid").join("config.toml"), "a = 1");
         // Bust the cache so the new file is picked up.
         trust.untrust(workspace);
         assert!(trust.workspace_restricted(workspace));
@@ -647,7 +647,7 @@ mod test {
 
         // After mutation (and revoking the cached entry to simulate fresh load), workspace becomes
         // Stale → indicator should show again.
-        write_file(&workspace.join(".coil").join("config.toml"), "a = 2");
+        write_file(&workspace.join(".sid").join("config.toml"), "a = 2");
         trust.inner.lock().remove(workspace);
         assert!(trust.workspace_restricted(workspace));
     }
@@ -655,20 +655,20 @@ mod test {
     #[test]
     fn set_config_invalidates_cache_so_stale_is_detected() {
         // Regression: prior to this fix the editor's WorkspaceTrust cache held a `Trusted` entry
-        // after `:workspace-trust` was run. If the user (or another process) modified `.coil/`
+        // after `:workspace-trust` was run. If the user (or another process) modified `.sid/`
         // while helix was running, subsequent queries kept returning Trusted even though
         // `Config::load_default`'s transient WorkspaceTrust would correctly see Stale. Reloading
         // config now clears the cache so the editor sees the new state on the next query.
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path();
-        write_file(&workspace.join(".coil").join("config.toml"), "a = 1");
+        write_file(&workspace.join(".sid").join("config.toml"), "a = 1");
 
         let mut trust = WorkspaceTrust::new(Config::default());
         trust.trust(workspace);
         assert_eq!(trust.status(workspace), TrustStatus::Trusted);
 
         // External mutation while helix is running.
-        write_file(&workspace.join(".coil").join("config.toml"), "a = 2");
+        write_file(&workspace.join(".sid").join("config.toml"), "a = 2");
 
         // Without a refresh, the cache still says Trusted.
         assert_eq!(trust.status(workspace), TrustStatus::Trusted);
@@ -694,8 +694,8 @@ mod test {
         let external = dir.path().join("external_config.toml");
         write_file(&external, "a = 1");
 
-        fs::create_dir_all(workspace.join(".coil")).unwrap();
-        symlink(&external, workspace.join(".coil").join("config.toml")).unwrap();
+        fs::create_dir_all(workspace.join(".sid")).unwrap();
+        symlink(&external, workspace.join(".sid").join("config.toml")).unwrap();
 
         let h1 = compute_workspace_hash(workspace).expect("symlink should be hashed");
 
@@ -718,12 +718,12 @@ mod test {
         // because the \0 separators were indistinguishable from content.
         let dir1 = tempfile::tempdir().unwrap();
         let split = dir1.path();
-        write_file(&split.join(".coil").join("foo.toml"), "a");
-        write_file(&split.join(".coil").join("bar.toml"), "b");
+        write_file(&split.join(".sid").join("foo.toml"), "a");
+        write_file(&split.join(".sid").join("bar.toml"), "b");
 
         let dir2 = tempfile::tempdir().unwrap();
         let merged = dir2.path();
-        write_file(&merged.join(".coil").join("foo.toml"), "a\0bar.toml\0b");
+        write_file(&merged.join(".sid").join("foo.toml"), "a\0bar.toml\0b");
 
         let h1 = compute_workspace_hash(split).expect("split has files");
         let h2 = compute_workspace_hash(merged).expect("merged has files");
@@ -811,15 +811,15 @@ mod test {
         // `workspace_restricted` unreachable.
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path();
-        write_file(&workspace.join(".coil").join("config.toml"), "a = 1");
+        write_file(&workspace.join(".sid").join("config.toml"), "a = 1");
 
         let trust = WorkspaceTrust::new(Config::default());
         trust.trust(workspace);
         assert!(!trust.workspace_restricted(workspace));
         assert_eq!(trust.status(workspace), TrustStatus::Trusted);
 
-        // Mutate `.coil/` and bust the in-memory cache to force a re-read.
-        write_file(&workspace.join(".coil").join("config.toml"), "a = 2");
+        // Mutate `.sid/` and bust the in-memory cache to force a re-read.
+        write_file(&workspace.join(".sid").join("config.toml"), "a = 2");
         trust.inner.lock().remove(workspace);
 
         assert_eq!(trust.status(workspace), TrustStatus::Stale);

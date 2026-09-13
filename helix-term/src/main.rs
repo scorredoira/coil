@@ -26,6 +26,7 @@ fn main() -> Result<()> {
 async fn main_impl() -> Result<i32> {
     let args = Args::parse_args().context("could not parse arguments")?;
 
+    helix_loader::migrate_from_coil();
     helix_loader::initialize_config_file(args.config_file.clone());
     helix_loader::initialize_log_file(args.log_file.clone());
 
@@ -33,12 +34,12 @@ async fn main_impl() -> Result<i32> {
     if args.display_help {
         print!(
             "\
-coil {}
+sid {}
 {}
 {}
 
 USAGE:
-    coil [FLAGS] [files]...
+    sid [FLAGS] [files]...
 
 ARGS:
     <files>...    Set the input file to use, position can also be specified via file[:row[:col]]
@@ -73,7 +74,7 @@ FLAGS:
     }
 
     if args.display_version {
-        println!("coil {} (a fork of Helix)", VERSION_AND_GIT_HASH);
+        println!("sid {} (a fork of Helix)", VERSION_AND_GIT_HASH);
         std::process::exit(0);
     }
 
@@ -144,7 +145,7 @@ FLAGS:
 
     // TODO: use the thread local executor to spawn the application task separately from the work pool
     let mut app = Application::new(args, config, lang_loader, workspace_trust)
-        .context("unable to start Coil")?;
+        .context("unable to start sid")?;
     let mut events = app.event_stream();
 
     let exit_code = app.run(&mut events).await?;

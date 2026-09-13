@@ -1,11 +1,11 @@
-# Building Coil for another machine
+# Building sid for another machine
 
-Coil travels as **two things**: the `coil` binary and a `runtime/` directory beside
+sid travels as **two things**: the `sid` binary and a `runtime/` directory beside
 it. There is nothing else to install — no shared library, no interpreter, no
 package manager. What the binary links is glibc and nothing more:
 
 ```
-$ ldd target/opt/coil
+$ ldd target/opt/sid
 libgcc_s.so.1   libm.so.6   libc.so.6
 ```
 
@@ -17,12 +17,12 @@ Without them the editor starts and shows plain text in one colour.
 `runtime/` is looked for in this order (`helix-loader/src/lib.rs:42`):
 
 1. `$CARGO_MANIFEST_DIR/../runtime` — only under `cargo run`
-2. `~/.config/coil/runtime`
-3. `$COIL_RUNTIME`
+2. `~/.config/sid/runtime`
+3. `$SID_RUNTIME`
 4. `<directory of the executable>/runtime`
 
 The last one is what a deployed copy lands on, so a tree like
-`/opt/coil/{coil,runtime}` needs no environment variable and no symlink.
+`/opt/sid/{sid,runtime}` needs no environment variable and no symlink.
 
 ## One rule: build on the platform you ship to
 
@@ -39,7 +39,7 @@ cargo build --profile opt --locked
 ```
 
 `opt` (`Cargo.toml:27`) is `release` plus fat LTO, one codegen unit and `strip`:
-**21 MB**, against the 34 MB of `--release`. The binary lands in `target/opt/coil`.
+**21 MB**, against the 34 MB of `--release`. The binary lands in `target/opt/sid`.
 
 The first build on a machine fetches and compiles every grammar and takes
 minutes; later ones reuse `runtime/grammars`.
@@ -103,7 +103,7 @@ Gatekeeper — the build is unsigned and unnotarized, and that is fine for one's
 own editor:
 
 ```sh
-xattr -dr com.apple.quarantine /opt/coil
+xattr -dr com.apple.quarantine /opt/sid
 ```
 
 ## Packaging it
@@ -119,13 +119,13 @@ markdown_inline nginx nix python regex rust scss sql toml tsx typescript vim xml
 yaml"
 
 D=target/dist          # under target/, so git never sees it
-rm -rf $D && mkdir -p $D/coil/runtime/grammars
-cp target/opt/coil $D/coil/
-cp -r runtime/queries runtime/themes runtime/tutor $D/coil/runtime/
-for g in $GRAMMARS; do cp "runtime/grammars/$g.so" $D/coil/runtime/grammars/; done
+rm -rf $D && mkdir -p $D/sid/runtime/grammars
+cp target/opt/sid $D/sid/
+cp -r runtime/queries runtime/themes runtime/tutor $D/sid/runtime/
+for g in $GRAMMARS; do cp "runtime/grammars/$g.so" $D/sid/runtime/grammars/; done
 
-tar -C $D -cf - coil | zstd -19 -T0 \
-    -o "$D/coil-$(git describe --tags)-linux-x86_64.tar.zst"
+tar -C $D -cf - sid | zstd -19 -T0 \
+    -o "$D/sid-$(git describe --tags)-linux-x86_64.tar.zst"
 ```
 
 That is **44 MB** unpacked and **8,2 MB** in the tarball. Queries (16 MB) and
@@ -138,26 +138,26 @@ for languages nobody opens.
 ## Installing it there
 
 ```sh
-curl -sL <url>/coil-linux-x86_64.tar.zst | tar -x --zstd -C /opt
-ln -sf /opt/coil/coil /usr/local/bin/coil
+curl -sL <url>/sid-linux-x86_64.tar.zst | tar -x --zstd -C /opt
+ln -sf /opt/sid/sid /usr/local/bin/sid
 
-coil --health | grep -i runtime   # the runtime dirs it found, best first
-coil --health go                  # "Tree-sitter parser ✓" = that grammar shipped
+sid --health | grep -i runtime   # the runtime dirs it found, best first
+sid --health go                  # "Tree-sitter parser ✓" = that grammar shipped
 ```
 
-Updating is those same lines over the top — nothing under `/opt/coil` holds
-state. `~/.config/coil/config.toml` is the user's and never travels in the
+Updating is those same lines over the top — nothing under `/opt/sid` holds
+state. `~/.config/sid/config.toml` is the user's and never travels in the
 tarball.
 
-One trap: a `~/.config/coil/runtime` on that machine (the symlink the README's
-from-source install makes) **wins** over `/opt/coil/runtime`, being priority 2
+One trap: a `~/.config/sid/runtime` on that machine (the symlink the README's
+from-source install makes) **wins** over `/opt/sid/runtime`, being priority 2
 against 4. On a box that once had a clone, remove it or the old grammars are the
 ones that load.
 
 ## What the machine still needs
 
 - **`git` on `PATH`** — the sidebar's Changes, History and blame tabs run it.
-- **A language server per language**, installed separately; `coil --health <lang>`
+- **A language server per language**, installed separately; `sid --health <lang>`
   says what it looked for and found. Nothing in the tarball needs one.
 
 ## Gotchas
@@ -167,7 +167,7 @@ ones that load.
   machine has to run without it.
 - `.github/workflows/release.yml` is still upstream's: it builds `hx`, names its
   artifacts `helix-*`, and its AppImage wrapper exports `HELIX_RUNTIME`, which
-  this fork's loader does not read (it reads `COIL_RUNTIME`). Nothing here
+  this fork's loader does not read (it reads `SID_RUNTIME`). Nothing here
   depends on that workflow.
 - `--locked` keeps `Cargo.lock` as committed; without it a build can quietly move
   a dependency.

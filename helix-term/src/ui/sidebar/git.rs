@@ -564,9 +564,9 @@ mod tests {
             root,
             &[
                 "-c",
-                "user.name=Coil Test",
+                "user.name=sid Test",
                 "-c",
-                "user.email=coil@example.invalid",
+                "user.email=sid@example.invalid",
                 "commit",
                 "--quiet",
                 "-m",

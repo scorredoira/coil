@@ -2,7 +2,7 @@
 name = "helix-term"
 description = "A post-modern text editor."
 include = ["src/**/*", "README.md"]
-default-run = "coil"
+default-run = "sid"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -37,7 +37,7 @@ integration = ["helix-event/integration_test"]
 git = ["helix-vcs/git"]
 
 [[bin]]
-name = "coil"
+name = "sid"
 path = "src/main.rs"
 
 [dependencies]

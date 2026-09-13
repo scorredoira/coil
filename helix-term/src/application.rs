@@ -761,7 +761,7 @@ impl Application {
 
         // Every event as the terminal handed it over: what a key actually sends through a
         // chain of terminal, multiplexer and ssh is answered by reading this, never by
-        // guessing. `coil -vv` writes it to the log.
+        // guessing. `sid -vv` writes it to the log.
         log::debug!("terminal event: {event:?}");
 
         let mut cx = crate::compositor::Context {

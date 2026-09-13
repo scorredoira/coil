@@ -1705,18 +1705,17 @@ mod tests {
 
     #[test]
     fn an_anchor_finds_its_heading_the_way_github_names_it() {
-        let text =
-            Rope::from("# Coil\n\ntext\n\n## Tabs, splits and the mouse\n\n### C++ & Rust\n");
+        let text = Rope::from("# sid\n\ntext\n\n## Tabs, splits and the mouse\n\n### C++ & Rust\n");
 
         assert_eq!(heading_line(&text, "tabs-splits-and-the-mouse"), Some(4));
-        assert_eq!(heading_line(&text, "coil"), Some(0));
+        assert_eq!(heading_line(&text, "sid"), Some(0));
         assert_eq!(heading_line(&text, "c--rust"), Some(6));
         assert_eq!(heading_line(&text, "missing"), None);
     }
 
     #[test]
     fn html_shows_its_text_and_images_not_its_tags() {
-        let text = "<div align=\"center\">\n\n<img alt=\"Logo\" src=\"x.svg\">\n\n# Coil\n\n\
+        let text = "<div align=\"center\">\n\n<img alt=\"Logo\" src=\"x.svg\">\n\n# sid\n\n\
                     </div>\n\n<!-- a note -->\n\n<p>Tom &amp; Jerry</p>\n\nA<br>B\n";
 
         assert_eq!(
@@ -1724,7 +1723,7 @@ mod tests {
             [
                 "[image: Logo]",
                 "",
-                "Coil",
+                "sid",
                 "━━━━━━━━━━━━━━━━━━━━",
                 "",
                 "Tom & Jerry",

@@ -1,4 +1,4 @@
-# Coil's defaults: the editor as it should be the moment it is installed.
+# sid's defaults: the editor as it should be the moment it is installed.
 # The user's config.toml is laid over this, so any of it can still be changed.
 # No arrays here: the merge would append the user's items to them, not replace.
 

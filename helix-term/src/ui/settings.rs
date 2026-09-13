@@ -435,7 +435,7 @@ mod tests {
     #[test]
     fn a_file_that_is_not_there_yet_is_written_whole() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("coil").join("config.toml");
+        let path = directory.path().join("sid").join("config.toml");
 
         write_setting(&path, "auto-save.focus-lost", &Value::Bool(true)).unwrap();
 
