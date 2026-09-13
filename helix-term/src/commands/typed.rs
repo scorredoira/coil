@@ -781,12 +781,39 @@ fn format(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyh
     }
 
     let (view, doc) = current_ref!(cx.editor);
-    let format = doc.format(cx.editor).context(
-        "A formatter isn't available, and no language server provides formatting capabilities",
-    )?;
+    let Some(format) = doc.format(cx.editor) else {
+        return format_builtin(cx.editor);
+    };
     let callback = make_format_callback(doc.id(), doc.version(), view.id, format, None);
     cx.jobs.callback(callback);
 
+    Ok(())
+}
+
+/// Formats JSON and XML without a formatter or a language server, with the document's own
+/// indentation and line ending; one undo takes it back.
+fn format_builtin(editor: &mut Editor) -> anyhow::Result<()> {
+    let scrolloff = editor.config().scrolloff;
+    let (view, doc) = current!(editor);
+    let unavailable =
+        "A formatter isn't available, and no language server provides formatting capabilities";
+    let language = doc.language_name().context(unavailable)?.to_string();
+    let text = doc.text().to_string();
+    let formatted = super::format::format(
+        &language,
+        &text,
+        doc.indent_style.as_str(),
+        doc.line_ending.as_str(),
+    )
+    .context(unavailable)?
+    .map_err(|err| anyhow!(err))?;
+    if formatted == text {
+        return Ok(());
+    }
+    let transaction = helix_core::diff::compare_ropes(doc.text(), &Rope::from(formatted));
+    doc.apply(&transaction, view.id);
+    doc.append_changes_to_history(view);
+    view.ensure_cursor_in_view(doc, scrolloff);
     Ok(())
 }
 
@@ -3364,7 +3391,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
     TypableCommand {
         name: "format",
         aliases: &["fmt"],
-        doc: "Format the file using an external formatter or language server.",
+        doc: "Format the file using an external formatter or language server; JSON and XML are formatted by sid itself when neither is there.",
         fun: format,
         completer: CommandCompleter::none(),
         signature: Signature {

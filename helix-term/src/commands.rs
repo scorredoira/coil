@@ -1,4 +1,5 @@
 pub(crate) mod dap;
+pub(crate) mod format;
 pub(crate) mod git;
 pub(crate) mod lsp;
 pub(crate) mod syntax;

@@ -236,6 +236,7 @@ So the keys are the ones you already know:
 | `F2` | Rename the symbol |
 | `F8` | Next diagnostic |
 | `Alt-z` | Wrap long lines, or stop |
+| `Shift-Alt-f` | Format the file — JSON and XML with nothing installed |
 | `Ctrl-Shift-b` | Show or hide the Markdown preview beside the file |
 | `Ctrl-Shift-m` | The Markdown preview on its own, filling the screen |
 | `Ctrl-q` | Quit, asking about anything unsaved |

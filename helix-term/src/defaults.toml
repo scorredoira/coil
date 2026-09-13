@@ -99,6 +99,8 @@ C-n = ":new"
 C-g = "goto_line_prompt"
 C-f = "search_in_file"
 A-z = ":toggle soft-wrap.enable"
+# Format the file, as in VS Code; JSON and XML need nothing installed.
+A-F = ":format"
 # Git from wherever you are: who changed this line, and the file's history.
 "C-A-b" = "blame_line"
 "C-A-l" = "file_history"
