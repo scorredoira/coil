@@ -333,64 +333,109 @@ To bring your configuration along: `cp -r ~/.config/helix ~/.config/sid`.
 
 ## Installing
 
-Download the [latest release](https://github.com/scorredoira/sid/releases/latest)
-for Linux x86_64/ARM64 or macOS Apple Silicon, or let the installer select it:
+Binaries are published for Linux (x86_64 and ARM64) and macOS on Apple Silicon
+in the [latest release](https://github.com/scorredoira/sid/releases/latest).
+No Rust, compiler or root access is needed on the machine.
+
+### With the installer
+
+The installer detects your operating system and architecture, downloads the
+latest release, verifies the archive's SHA-256 checksum and installs the
+complete package under `~/.local`, leaving your configuration alone. Run the
+same commands again to update:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/scorredoira/sid/master/fork/install.sh -o /tmp/install-sid.sh
 sh /tmp/install-sid.sh
+```
+
+`SID_VERSION=vYYYY.M.N` (a release tag) installs that release instead of the latest, and
+`SID_PREFIX` an absolute prefix other than `~/.local`.
+
+### Adding sid to PATH
+
+Run the block for your shell once — not on every update. It saves the setting
+for future terminals and makes `sid` available in the current one.
+
+**macOS with the default shell (zsh)**, or zsh on Linux:
+
+```sh
+printf '\nexport PATH="$HOME/.local/bin:$PATH"\n' >> ~/.zshrc
 export PATH="$HOME/.local/bin:$PATH"
 sid
 ```
 
-This installs the complete package under `~/.local`, verifies the archive's
-SHA-256 checksum and preserves your configuration. Repeat to update. No Rust,
-Homebrew or compiler is needed on the destination machine. To keep sid on PATH in future terminals, run this once for macOS's default
-zsh shell:
-
-```sh
-printf '\nexport PATH="$HOME/.local/bin:$PATH"\n' >> ~/.zshrc
-```
-
-For bash on Linux, use `~/.bashrc` instead:
+**Linux with bash:**
 
 ```sh
 printf '\nexport PATH="$HOME/.local/bin:$PATH"\n' >> ~/.bashrc
+export PATH="$HOME/.local/bin:$PATH"
+sid
 ```
 
-Language servers and formatters
-are installed separately; `sid --health` shows which are available.
+The single quotes keep `$HOME` and `$PATH` from expanding until each new shell
+starts.
 
-For servers, the Linux `.run` asset is a single transferable file: rename it
-`sid`, run `chmod +x sid`, and copy it to a directory on PATH. It includes the
-same runtime, extracted to a user cache on first use, with no FUSE requirement.
-Linux builds require glibc 2.28+ (Ubuntu 20.04+, Debian 10+); macOS builds require
-macOS 14+. Choose the asset matching the machine's architecture.
+### From a downloaded archive
 
-To use it as your default editor, set `EDITOR=sid` and `VISUAL=sid`. An optional
-`alias vim=sid` affects interactive use; sid does not emulate Vim's CLI.
+Download the `.tar.gz` for your machine from the release and extract it. Run
+`./sid` from that directory to try it, or `sh install.sh` to install under
+`~/.local` as above. Older directories under `~/.local/lib/sid` can be removed
+once an update is installed.
+
+### A single file for servers
+
+The Linux `.run` asset is one portable file: rename it `sid`, run
+`chmod +x sid` and copy it to a directory on PATH. It needs only standard shell
+utilities, `tar`, `gzip` and `sha256sum` — no FUSE, root access or compiler. On
+first use it verifies and extracts itself under
+`${XDG_CACHE_HOME:-$HOME/.cache}/sid/portable`, which must be on a filesystem
+that allows execution; delete it to reclaim space and the next run extracts
+again.
+
+### Requirements and extras
+
+- Linux builds need glibc 2.28+ (Ubuntu 20.04+, Debian 10+); Alpine/musl is not
+  supported. macOS builds need macOS 14+ on Apple Silicon; Intel Macs are not
+  built.
+- Themes, queries and compiled grammars are included. Language servers and
+  formatters are installed separately; `sid --health` lists what your machine
+  has. Git history needs the `git` command.
+- To use sid wherever a tool asks for an editor, set `EDITOR=sid` and
+  `VISUAL=sid` in your shell profile. An optional `alias vim=sid` affects only
+  your interactive shell; sid does not implement Vim's command-line interface.
 
 ### Building from source
 
-Building needs [Rust](https://rustup.rs), git and a C
-compiler, which builds the tree-sitter grammars (on macOS,
-`xcode-select --install`).
+Building needs [Rust](https://rustup.rs), git and a C compiler, which builds the
+tree-sitter grammars (on macOS, `xcode-select --install`).
 
 ```sh
 git clone https://github.com/scorredoira/sid
 cd sid
-cargo install --path helix-term --locked
-mkdir -p ~/.config/sid
-ln -sfn "$PWD/runtime" ~/.config/sid/runtime
+./build.sh
 ```
 
-The first build fetches and compiles every grammar, so it takes a few
-minutes. `sid` lands in `~/.cargo/bin`, which rustup puts on your `PATH`;
-`sid --health` says where it reads its configuration from. The `runtime`
-link keeps the clone as the source of the grammars and themes, so leave it
-where it is.
+`build.sh` compiles the release binary into `target/release/sid`, links it from
+`~/.local/bin/sid` (`SID_BIN_DIR` picks another directory) and links the clone's
+`runtime` from `~/.config/sid/runtime`, so the grammars and themes come from the
+clone — leave it where it is. The first build fetches and compiles every
+grammar, so it takes a few minutes.
 
-To update: `git pull` in the clone, then the `cargo install` line again.
+**sid is a compiled binary: any change to the source — your own edits, a
+`git pull`, a switch of branch — does nothing until you run `./build.sh` again
+and restart sid.** A change only to documentation needs no rebuild.
+
+To know which build you are running, `F1` shows it at the top right and
+`sid --version` prints it: `v2026.9.17` is that release, `v2026.9.17+2
+(3c25a543)` a build two commits past it, at commit `3c25a543`.
+
+The same build by hand, if you prefer:
+
+```sh
+cargo build --release --locked -p helix-term --bin sid
+ln -sfn "$PWD/target/release/sid" ~/.local/bin/sid
+```
 
 ## Following Helix
 
