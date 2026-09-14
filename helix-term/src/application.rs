@@ -199,6 +199,11 @@ impl Application {
                                 nr_of_files -= 1;
                                 continue;
                             }
+                            // Asked about on the first frame, over whatever else opens.
+                            Err(DocumentOpenError::TooLarge) => {
+                                nr_of_files -= 1;
+                                continue;
+                            }
                             Err(err) => return Err(anyhow::anyhow!(err)),
                             // We can't open more than 1 buffer for 1 file, in this case we already have opened this file previously
                             Ok(doc_id) if old_id == Some(doc_id) => {
@@ -225,7 +230,7 @@ impl Application {
 
                 // if all files were invalid, replace with empty buffer
                 if nr_of_files == 0 {
-                    editor.new_file(Action::VerticalSplit);
+                    editor.placeholder = Some(editor.new_file(Action::VerticalSplit));
                 } else {
                     editor.set_status(format!(
                         "Loaded {} file{}.",
@@ -303,6 +308,13 @@ impl Application {
 
         helix_event::start_frame();
         cx.editor.needs_redraw = false;
+
+        if let Some((path, size, action)) = cx.editor.large_file_request.take() {
+            // Whoever asked may have said it could not open the file; the question says why.
+            cx.editor.clear_status();
+            self.compositor
+                .push(Box::new(ask_to_open_large_file(path, size, action)));
+        }
 
         let area = self
             .terminal
@@ -1704,5 +1716,71 @@ impl ui::menu::Item for lsp::MessageActionItem {
     type Data = ();
     fn format(&self, _data: &Self::Data) -> tui::widgets::Row<'_> {
         self.title.as_str().into()
+    }
+}
+
+/// A size as people read it: `1.2 GB`, `64 MB`.
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 || size >= 10.0 {
+        format!("{size:.0} {}", UNITS[unit])
+    } else {
+        format!("{size:.1} {}", UNITS[unit])
+    }
+}
+
+/// Asks before a large file is opened: the editor holds it whole, and what it can do with it
+/// is less.
+fn ask_to_open_large_file(
+    path: std::path::PathBuf,
+    size: u64,
+    action: helix_view::editor::Action,
+) -> ui::confirm::Confirm {
+    let name = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let lines = vec![
+        format!("{name} is {}.", human_size(size)),
+        "sid reads a file whole: it takes at least that much memory.".to_string(),
+        "It opens without highlighting, language server, git marks or line wrap.".to_string(),
+    ];
+    let answers = vec![
+        ui::confirm::Answer::new(
+            "Open anyway",
+            Box::new(move |cx| {
+                cx.editor.large_files_allowed.insert(path.clone());
+                // In place of the blank the editor put up, not beside it.
+                let action = if cx.editor.nothing_open() {
+                    helix_view::editor::Action::Replace
+                } else {
+                    action
+                };
+                if let Err(err) = cx.editor.open(&path, action) {
+                    cx.editor
+                        .set_error(format!("unable to open \"{}\": {err}", path.display()));
+                }
+            }),
+        ),
+        ui::confirm::Answer::new("Cancel", Box::new(|_| {})),
+    ];
+    ui::confirm::Confirm::new("Large file", lines, answers)
+}
+
+#[cfg(test)]
+mod large_file_tests {
+    use super::human_size;
+
+    #[test]
+    fn sizes_read_as_people_say_them() {
+        assert_eq!(human_size(512), "512 B");
+        assert_eq!(human_size(64 * 1024 * 1024), "64 MB");
+        assert_eq!(human_size(1288490188), "1.2 GB");
     }
 }

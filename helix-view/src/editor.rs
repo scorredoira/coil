@@ -1308,6 +1308,11 @@ pub struct Editor {
     /// The blank buffer the editor put up itself because there was nothing to show: while
     /// it is all there is, the screen welcomes instead of showing an empty tab.
     pub placeholder: Option<DocumentId>,
+    /// Large files it was said yes to, opened from then on without asking again.
+    pub large_files_allowed: HashSet<PathBuf>,
+    /// A large file that was asked to open: its path, its size and how it was to be shown,
+    /// waiting for the question the front end puts on screen.
+    pub large_file_request: Option<(PathBuf, u64, Action)>,
 
     // We Flatten<> to resolve the inner DocumentSavedEventFuture. For that we need a stream of streams, hence the Once<>.
     // https://stackoverflow.com/a/66875668
@@ -1463,6 +1468,8 @@ impl Editor {
             next_document_id: DocumentId::default(),
             documents: BTreeMap::new(),
             placeholder: None,
+            large_files_allowed: HashSet::new(),
+            large_file_request: None,
             saves: HashMap::new(),
             save_queue: SelectAll::new(),
             write_count: 0,
@@ -2186,13 +2193,27 @@ impl Editor {
         let id = if let Some(id) = id {
             id
         } else {
+            let size = path.metadata().map_or(0, |metadata| metadata.len());
+            let large = size > crate::document::LARGE_FILE_BYTES;
+            if large && !self.large_files_allowed.contains(&path) {
+                self.large_file_request = Some((path, size, action));
+                return Err(DocumentOpenError::TooLarge);
+            }
             let mut doc = Document::open(
                 &path,
                 None,
-                true,
+                !large,
                 self.config.clone(),
                 self.syn_loader.clone(),
             )?;
+            if large {
+                // The text alone: highlighting, a language server and git's marks would each
+                // walk all of it again.
+                doc.large = true;
+                let id = self.new_document(doc);
+                self.switch(id, action);
+                return Ok(id);
+            }
 
             let diagnostics =
                 Editor::doc_diagnostics(&self.language_servers, &self.diagnostics, &doc);

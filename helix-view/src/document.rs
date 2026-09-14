@@ -134,11 +134,20 @@ pub struct SavePoint {
 pub enum DocumentOpenError {
     #[error("path must be a regular file, symlink, or directory")]
     IrregularFile,
+    /// Past [`LARGE_FILE_BYTES`], not opened until asked: the editor holds a file whole.
+    #[error("the file is too large to open without asking first")]
+    TooLarge,
     #[error(transparent)]
     IoError(#[from] io::Error),
 }
 
+/// The size from which a file is asked about before it is opened, and opened without
+/// highlighting, language servers, git marks or soft wrap: each of them walks the whole text.
+pub const LARGE_FILE_BYTES: u64 = 50 * 1024 * 1024;
+
 pub struct Document {
+    /// Opened past [`LARGE_FILE_BYTES`]: the text alone, with nothing that walks all of it.
+    pub large: bool,
     pub(crate) id: DocumentId,
     text: Rope,
     selections: HashMap<ViewId, Selection>,
@@ -772,6 +781,7 @@ impl Document {
             focused_at: std::time::Instant::now(),
             readonly: false,
             scratch_name: None,
+            large: false,
             review: None,
             jump_labels: HashMap::new(),
             document_highlights: HashMap::new(),
@@ -2421,7 +2431,7 @@ impl Document {
             .unwrap_or_else(|| "↪ ".into());
         let tab_width = self.tab_width() as u16;
         TextFormat {
-            soft_wrap: enable_soft_wrap && viewport_width > 10,
+            soft_wrap: enable_soft_wrap && viewport_width > 10 && !self.large,
             tab_width,
             max_wrap: max_wrap.min(viewport_width / 4),
             max_indent_retain: max_indent_retain.min(viewport_width * 2 / 5),

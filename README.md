@@ -190,7 +190,8 @@ reaches the file behind it.
 
 Buffers are tabs you can click, each with a cross that closes it, and there is a
 tab even when only one file is open. Right-click a tab to split its file vertically
-(side by side) or horizontally (stacked), keeping the current view open.
+(side by side) or horizontally (stacked), keeping the current view open, or to
+close it, every other tab, or all of them.
 The right button in the editor opens what can be done where it landed:
 cut, copy, paste, go to the definition, rename the
 symbol, or split vertically or horizontally. With more than one pane open,
@@ -219,6 +220,11 @@ previews a row and a double click opens it; the wheel over the list walks it,
 and over the preview scrolls the preview.
 
 ![Two files side by side, each a tab you can click](fork/screenshots/splits.png)
+
+sid holds a file whole in memory, so one past 50 MB — a database dump, a log — is
+asked about before it opens, with its size. Said yes to, it opens without
+highlighting, language server, git marks or line wrap, which would each walk all of
+it again, and moves as fast as a small one.
 
 ## Ready as installed
 

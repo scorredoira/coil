@@ -2478,6 +2478,18 @@ fn open_tab_menu(row: u16, column: u16, doc_id: helix_view::DocumentId) -> Event
             )
         })
         .collect();
+        // The tab pointed at is the current one now, so "others" are all but it.
+        for (label, keys, command) in [
+            ("Close", "Ctrl+w", "buffer-close"),
+            ("Close other tabs", "", "buffer-close-others"),
+            ("Close all tabs", "Shift+F4", "buffer-close-all"),
+        ] {
+            entries.push(context_menu::Entry::new(
+                label,
+                keys,
+                Box::new(move |_compositor, cx| commands::run_typable(cx, command)),
+            ));
+        }
         entries.extend(review_menu_entries(compositor, cx));
         let menu = context_menu::ContextMenu::new((row, column), entries);
         compositor.push(Box::new(menu));
