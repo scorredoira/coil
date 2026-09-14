@@ -21,6 +21,22 @@ languages.
 
 ![The file tree beside two open files](fork/screenshots/tree.png)
 
+## Install
+
+On macOS (Apple Silicon) or Linux (x86_64 and ARM64), with no compiler or root
+access — the same two lines update it:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/scorredoira/sid/master/fork/install.sh -o /tmp/install-sid.sh
+sh /tmp/install-sid.sh
+```
+
+It installs under `~/.local`: make sure `~/.local/bin` is on your PATH, then run
+`sid` in a project. The binaries are in the
+[latest release](https://github.com/scorredoira/sid/releases/latest); a single
+portable file for servers, other prefixes and building from source are under
+[Installing](#installing).
+
 ## Who it is for
 
 - **People who work in the terminal, or on machines they reach over SSH**, and
