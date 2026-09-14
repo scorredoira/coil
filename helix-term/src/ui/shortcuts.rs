@@ -85,12 +85,17 @@ fn collect(
     scope: &'static str,
     path: &mut Vec<String>,
     entries: &mut Vec<Shortcut>,
+    enhanced: bool,
 ) {
     match node {
         KeyTrie::Node(node) => {
             for (key, child) in node.iter() {
+                // A key this terminal never sends is not a shortcut here.
+                if !crate::keymap::key_reaches(key, enhanced) {
+                    continue;
+                }
                 path.push(key_label(*key));
-                collect(child, scope, path, entries);
+                collect(child, scope, path, entries, enhanced);
                 path.pop();
             }
         }
@@ -117,7 +122,7 @@ fn collect(
 }
 
 impl Shortcuts {
-    pub fn new(maps: &HashMap<Mode, KeyTrie>) -> Self {
+    pub fn new(maps: &HashMap<Mode, KeyTrie>, enhanced: bool) -> Self {
         let mut entries = Vec::new();
         for (mode, scope) in [
             (Mode::Insert, "Insert"),
@@ -125,7 +130,7 @@ impl Shortcuts {
             (Mode::Select, "Select"),
         ] {
             if let Some(map) = maps.get(&mode) {
-                collect(map, scope, &mut Vec::new(), &mut entries);
+                collect(map, scope, &mut Vec::new(), &mut entries, enhanced);
             }
         }
         // These are local controls, handled before the configurable editor keymaps.
@@ -327,7 +332,7 @@ impl Component for Shortcuts {
             );
         }
         let footer = format!(
-            "{} shortcuts · Type to filter · Tab: scope · ↑↓ / wheel: scroll · Esc / F1: close",
+            "{} shortcuts · Type to filter · Tab: scope · ↑↓ / wheel: scroll · Esc / Shift+F1: close",
             entries.len()
         );
         surface.set_stringn(x, area.bottom() - 1, &footer, width, dim);
@@ -402,7 +407,7 @@ mod tests {
         )
         .unwrap();
         let maps = HashMap::from([(Mode::Insert, trie)]);
-        let mut screen = Shortcuts::new(&maps);
+        let mut screen = Shortcuts::new(&maps, true);
         assert!(screen
             .entries
             .iter()

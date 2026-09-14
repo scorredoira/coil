@@ -33,7 +33,10 @@ enable = false
 # The keys of every mode go under [keys.all]: they are laid under normal, select and
 # insert, and a mode's own table wins over them.
 [keys.all]
-F1 = "keyboard_shortcuts"
+# F1 is every command, searchable, with its keys: reachable in any terminal, even one that
+# sends no Cmd and no Ctrl-Shift with a letter.
+F1 = "command_palette"
+S-F1 = "keyboard_shortcuts"
 F4 = "review_context_toggle"
 F6 = "review_commits_toggle"
 F7 = "review_code_toggle"
@@ -72,6 +75,11 @@ C-F = "global_search"
 C-b = "sidebar_toggle"
 C-E = "sidebar_focus"
 C-R = "sidebar_reveal"
+# The same without Shift, for the terminals where Ctrl-Shift-letter arrives as Ctrl-letter.
+C-e = "sidebar_focus"
+C-r = "sidebar_reveal"
+C-o = "lsp_or_syntax_symbol_picker"
+C-l = "select_all_occurrences"
 # Function keys, so they reach the editor wherever the focus is: F3 and F11 are taken,
 # by search and by the terminal's full screen.
 S-F11 = "sidebar_collapse"
@@ -190,7 +198,6 @@ C-del = "delete_word_forward"
 # on should never be "delete the line up to here".
 C-u = "no_op"
 C-k = "no_op"
-C-r = "no_op"
 S-left = "extend_char_left"
 S-right = "extend_char_right"
 S-up = "extend_visual_line_up"

@@ -28,8 +28,8 @@ const SECTIONS: &[(&str, &[(&str, &str)])] = &[
     (
         "Help",
         &[
-            ("Keyboard shortcuts", "keyboard_shortcuts"),
             ("Command palette", "command_palette"),
+            ("Keyboard shortcuts", "keyboard_shortcuts"),
             ("Settings", "settings"),
             ("Check for updates", ":check-updates"),
         ],
@@ -105,7 +105,7 @@ impl Welcome {
         };
         let bindings = keymaps
             .get(&editor.mode())
-            .map(KeyTrie::reverse_map)
+            .map(|keymap| crate::keymap::reachable(keymap.reverse_map(), editor.keyboard_enhanced))
             .unwrap_or_default();
 
         let width = WIDTH.min(area.width.saturating_sub(4));

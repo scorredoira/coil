@@ -2706,12 +2706,12 @@ fn make_search_word_bounded(cx: &mut Context) {
 }
 
 fn global_search(cx: &mut Context) {
-    search_panel(cx, SearchScope::Workspace)
+    search_panel(cx, SearchScope::Workspace, String::new())
 }
 
 fn search_in_file(cx: &mut Context) {
     let id = doc!(cx.editor).id();
-    search_panel(cx, SearchScope::Document(id))
+    search_panel(cx, SearchScope::Document(id), String::new())
 }
 
 /// Where the search panel looks: every file under the working directory, or the one
@@ -2722,7 +2722,7 @@ enum SearchScope {
     Document(DocumentId),
 }
 
-fn search_panel(cx: &mut Context, scope: SearchScope) {
+fn search_panel(cx: &mut Context, scope: SearchScope, query: String) {
     #[derive(Debug)]
     struct FileResult<'a> {
         path: Cow<'a, Path>,
@@ -3048,8 +3048,12 @@ fn search_panel(cx: &mut Context, scope: SearchScope) {
         }
         SearchScope::Document(id) => {
             let name = doc!(cx.editor, &id).display_name();
-            let hint: &'static [&'static str] =
-                &["⇄ replace", "click or Space flips a switch", "Tab next"];
+            let hint: &'static [&'static str] = &[
+                "Ctrl+f whole project",
+                "⇄ replace",
+                "click or Space flips a switch",
+                "Tab next",
+            ];
             (format!("Search {name}"), hint)
         }
     };
@@ -3184,6 +3188,17 @@ fn search_panel(cx: &mut Context, scope: SearchScope) {
             Err(err) => cx.editor.set_error(format!("Replace failed: {err}")),
         }
     })
+    .with_widen(
+        matches!(scope, SearchScope::Document(_)),
+        |compositor, cx, query| {
+            // Ctrl-f again: the same words, over the whole project. It is how the project is
+            // searched where Ctrl-Shift-f arrives as Ctrl-f.
+            ui::context_menu::with_context(compositor, cx, |cx| {
+                search_panel(cx, SearchScope::Workspace, query)
+            });
+        },
+    )
+    .with_query(query, cx.editor)
     .with_dynamic_query(get_files, Some(275));
 
     cx.push_layer(Box::new(overlaid(picker)));
@@ -4774,7 +4789,7 @@ pub fn keyboard_shortcuts(cx: &mut Context) {
     cx.callback.push(Box::new(|compositor, _cx| {
         let view = compositor.find::<ui::EditorView>().unwrap();
         let map = view.keymaps.map();
-        let screen = ui::shortcuts::Shortcuts::new(&map);
+        let screen = ui::shortcuts::Shortcuts::new(&map, _cx.editor.keyboard_enhanced);
         compositor.push(Box::new(screen));
     }));
 }
@@ -4785,9 +4800,11 @@ pub fn command_palette(cx: &mut Context) {
 
     cx.callback.push(Box::new(
         move |compositor: &mut Compositor, cx: &mut compositor::Context| {
-            let keymap = compositor.find::<ui::EditorView>().unwrap().keymaps.map()
-                [&cx.editor.mode]
-                .reverse_map();
+            let keymap = crate::keymap::reachable(
+                compositor.find::<ui::EditorView>().unwrap().keymaps.map()[&cx.editor.mode]
+                    .reverse_map(),
+                cx.editor.keyboard_enhanced,
+            );
 
             let commands = MappableCommand::STATIC_COMMAND_LIST.iter().cloned().chain(
                 typed::TYPABLE_COMMAND_LIST

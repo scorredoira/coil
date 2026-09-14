@@ -53,6 +53,11 @@ pub trait Backend {
     /// Flushes the terminal buffer
     fn flush(&mut self) -> Result<(), io::Error>;
     fn supports_true_color(&self) -> bool;
+    /// Whether the terminal reports keys in full: Cmd, and Ctrl-Shift with a letter told
+    /// apart from Ctrl with it. Terminals on the classic encoding send neither.
+    fn keyboard_enhanced(&self) -> bool {
+        true
+    }
     fn get_theme_mode(&self) -> Option<helix_view::theme::Mode>;
     fn set_background_color(&mut self, color: Option<Color>) -> io::Result<()>;
 }

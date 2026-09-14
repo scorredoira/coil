@@ -286,7 +286,18 @@ mod tests {
             assert_eq!(command_at(&config, mode, &["C-y"]), "redo");
             assert_eq!(command_at(&config, mode, &["C-p"]), "file_picker");
             assert_eq!(command_at(&config, mode, &["C-P"]), "command_palette");
-            assert_eq!(command_at(&config, mode, &["F1"]), "keyboard_shortcuts");
+            assert_eq!(command_at(&config, mode, &["F1"]), "command_palette");
+            assert_eq!(command_at(&config, mode, &["S-F1"]), "keyboard_shortcuts");
+            assert_eq!(command_at(&config, mode, &["C-e"]), "sidebar_focus");
+            assert_eq!(command_at(&config, mode, &["C-r"]), "sidebar_reveal");
+            assert_eq!(
+                command_at(&config, mode, &["C-o"]),
+                "lsp_or_syntax_symbol_picker"
+            );
+            assert_eq!(
+                command_at(&config, mode, &["C-l"]),
+                "select_all_occurrences"
+            );
             assert_eq!(command_at(&config, mode, &["F4"]), "review_context_toggle");
             assert_eq!(command_at(&config, mode, &["F6"]), "review_commits_toggle");
             assert_eq!(command_at(&config, mode, &["F7"]), "review_code_toggle");

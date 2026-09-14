@@ -1409,6 +1409,12 @@ impl Application {
         S: Stream<Item = std::io::Result<TerminalEvent>> + Unpin,
     {
         self.terminal.claim()?;
+        self.editor.keyboard_enhanced = self.terminal.backend().keyboard_enhanced();
+        if !self.editor.keyboard_enhanced {
+            self.editor.set_status(
+                "This terminal sends no Cmd and no Ctrl+Shift+letter: F1 opens every command",
+            );
+        }
 
         self.event_loop(input_stream).await;
 

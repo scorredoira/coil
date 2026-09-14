@@ -397,6 +397,9 @@ impl PanelInput {
     }
 }
 
+/// Hands a picker's query to a wider search, in place of the picker.
+type WidenFn = dyn Fn(&mut Compositor, &mut Context, String);
+
 pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     columns: Arc<[Column<T, D>]>,
     primary_column: usize,
@@ -447,6 +450,8 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     /// A line of help drawn on the bottom border, for what the picker cannot show
     /// on its own: the `%field` prefixes it hides, what its switches mean.
     hint: &'static [&'static str],
+    /// What Ctrl-f does with the query, for a picker that has somewhere wider to look.
+    widen: Option<Box<WidenFn>>,
     title: Option<String>,
 
     /// Whether to show the preview panel (default true)
@@ -595,6 +600,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             preview_scroll: PreviewScroll::default(),
             panel_action: None,
             hint: &[],
+            widen: None,
             title: None,
             truncate_start: true,
             show_preview: true,
@@ -678,6 +684,27 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
     /// What the picker is, drawn on its top border.
     pub fn with_title(mut self, title: String) -> Self {
         self.title = Some(title);
+        self
+    }
+
+    /// Ctrl-f (Cmd-f) closes the picker and hands its query to `widen`, when `enabled`.
+    pub fn with_widen(
+        mut self,
+        enabled: bool,
+        widen: impl Fn(&mut Compositor, &mut Context, String) + 'static,
+    ) -> Self {
+        if enabled {
+            self.widen = Some(Box::new(widen));
+        }
+        self
+    }
+
+    /// Starts with `query` typed in.
+    pub fn with_query(mut self, query: String, editor: &Editor) -> Self {
+        if !query.is_empty() {
+            self.prompt.set_line(query, editor);
+            self.handle_prompt_change(true);
+        }
         self
     }
 
@@ -1820,6 +1847,18 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
                 self.to_end();
             }
             key!(Esc) | ctrl!('c') => return self.close(),
+            ctrl!('f')
+            | KeyEvent {
+                code: KeyCode::Char('f'),
+                modifiers: KeyModifiers::SUPER,
+            } if self.widen.is_some() => {
+                let query = self.prompt.line().clone();
+                let widen = self.widen.take().unwrap();
+                return EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                    compositor.pop();
+                    widen(compositor, cx, query);
+                })));
+            }
             alt!(Enter) => {
                 if let Some(option) = self.selection() {
                     (self.callback_fn)(ctx, option, self.default_action);

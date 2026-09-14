@@ -181,6 +181,34 @@ impl<'de> serde::de::Visitor<'de> for KeyTrieVisitor {
     }
 }
 
+/// Whether `key` reaches the editor. Without the enhanced keyboard a terminal sends no Cmd,
+/// and Ctrl-Shift with a letter arrives as Ctrl with it, which is another binding's.
+pub fn key_reaches(key: &KeyEvent, enhanced: bool) -> bool {
+    use helix_view::keyboard::{KeyCode, KeyModifiers};
+    if enhanced {
+        return true;
+    }
+    if key.modifiers.contains(KeyModifiers::SUPER) {
+        return false;
+    }
+    let letter = matches!(key.code, KeyCode::Char(c) if c.is_alphabetic());
+    let shifted = key.modifiers.contains(KeyModifiers::SHIFT)
+        || matches!(key.code, KeyCode::Char(c) if c.is_uppercase());
+    !(key.modifiers.contains(KeyModifiers::CONTROL) && letter && shifted)
+}
+
+/// The bindings of a reverse keymap that reach the editor in this terminal.
+pub fn reachable(mut map: ReverseKeymap, enhanced: bool) -> ReverseKeymap {
+    if enhanced {
+        return map;
+    }
+    for bindings in map.values_mut() {
+        bindings.retain(|keys| keys.iter().all(|key| key_reaches(key, false)));
+    }
+    map.retain(|_, bindings| !bindings.is_empty());
+    map
+}
+
 impl KeyTrie {
     pub fn reverse_map(&self) -> ReverseKeymap {
         // recursively visit all nodes in keymap
@@ -614,5 +642,18 @@ is_sticky = false
         ));
 
         assert_eq!(toml::from_str(keys), Ok(expectation));
+    }
+
+    #[test]
+    fn a_classic_terminal_reaches_no_cmd_and_no_ctrl_shift_letter() {
+        let key = |name: &str| name.parse::<KeyEvent>().unwrap();
+        assert!(!key_reaches(&key("Cmd-p"), false));
+        assert!(!key_reaches(&key("C-P"), false));
+        assert!(!key_reaches(&key("C-S-p"), false));
+        assert!(key_reaches(&key("C-p"), false));
+        assert!(key_reaches(&key("S-F1"), false));
+        assert!(key_reaches(&key("C-S-up"), false));
+        assert!(key_reaches(&key("A-F"), false));
+        assert!(key_reaches(&key("C-P"), true));
     }
 }

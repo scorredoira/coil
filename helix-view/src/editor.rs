@@ -1308,6 +1308,9 @@ pub struct Editor {
     /// The blank buffer the editor put up itself because there was nothing to show: while
     /// it is all there is, the screen welcomes instead of showing an empty tab.
     pub placeholder: Option<DocumentId>,
+    /// Whether the terminal sends Cmd and Ctrl-Shift-letter; without, only the keys that
+    /// reach the editor are shown next to commands.
+    pub keyboard_enhanced: bool,
     /// Large files it was said yes to, opened from then on without asking again.
     pub large_files_allowed: HashSet<PathBuf>,
     /// A large file that was asked to open: its path, its size and how it was to be shown,
@@ -1468,6 +1471,7 @@ impl Editor {
             next_document_id: DocumentId::default(),
             documents: BTreeMap::new(),
             placeholder: None,
+            keyboard_enhanced: true,
             large_files_allowed: HashSet::new(),
             large_file_request: None,
             saves: HashMap::new(),

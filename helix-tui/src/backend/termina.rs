@@ -612,6 +612,10 @@ impl Backend for TerminaBackend {
         self.capabilities.true_color
     }
 
+    fn keyboard_enhanced(&self) -> bool {
+        self.capabilities.kitty_keyboard == KittyKeyboardSupport::Full
+    }
+
     fn get_theme_mode(&self) -> Option<theme::Mode> {
         self.capabilities.theme_mode
     }
