@@ -3,6 +3,16 @@ target
 helix-term/rustfmt.toml
 result
 runtime/grammars
+# macOS litter, left by a Mac opening files over the network
 .DS_Store
+._*
+.AppleDouble
+.LSOverride
+.Spotlight-V100
+.Trashes
+.fseventsd
+.TemporaryItems
+.DocumentRevisions-V100
+.apdisk
 
 /dist/
