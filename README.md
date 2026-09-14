@@ -32,7 +32,9 @@ sh /tmp/install-sid.sh
 ```
 
 It installs under `~/.local`: make sure `~/.local/bin` is on your PATH, then run
-`sid` in a project. The binaries are in the
+`sid` in a project. Later, `sid --update` installs the latest release when there
+is a newer one, and so does **Check for updates** on the welcome screen
+(`:check-updates`), after asking. The binaries are in the
 [latest release](https://github.com/scorredoira/sid/releases/latest); a single
 portable file for servers, other prefixes and building from source are under
 [Installing](#installing).
@@ -88,6 +90,37 @@ what happens there: a file a tool or git creates appears on its own within a
 couple of seconds, with your folds and your place kept. `F5` reads everything
 on screen again at once.
 
+## Search and replace across the project
+
+`Ctrl-Shift-f` opens a panel with a replace box and
+include/exclude filters (the filters are remembered), switches for case, whole
+word, regex and preserving case — the panel's border says their keys — and
+each result shows the line it matched. `Alt-a` replaces every match on
+screen: the files are changed but left unsaved, and one undo takes it back.
+
+![The search panel with replace and filters](fork/screenshots/search.png)
+
+## Search and replace in this file
+
+`Ctrl-f` opens the same panel on the file you are editing, its name on the
+border: the matches listed by line, the file beside them, the same switches.
+`Alt-a` replaces every match in it, unsaved, and one undo takes it back.
+`Ctrl-g` asks for a line number and goes there, following it as you type.
+
+![The search panel on one file, its matches by line](fork/screenshots/search-file.png)
+
+## Go to definition, references and symbols
+
+`F12` goes to the definition of what is under the cursor and `Shift-F12` lists
+its references; `F2` renames it everywhere, and `F8` walks to the next problem
+the language server found. `Ctrl-Shift-o` lists the symbols of the file and
+`Ctrl-t` those of the whole project, filtered as you type — from the language
+server when there is one, and from the syntax tree when there is not, so they
+work on any file sid can highlight. `Ctrl-Alt-←` and `Ctrl-Alt-→` take you back
+and forth through where you have been.
+
+![The symbols of a file, filtered by what was typed](fork/screenshots/symbols.png)
+
 ## What git sees changed
 
 The **Changes** tab (`Tab` inside the sidebar) lists what `git status` names,
@@ -129,25 +162,6 @@ or use `F6` / `F7` to show or hide commits / code.
 which commit; press it again to open that commit in the sidebar.
 
 ![Who changed the line under the cursor, in the status line](fork/screenshots/blame.png)
-
-## Search and replace across the project
-
-`Ctrl-Shift-f` opens a panel with a replace box and
-include/exclude filters (the filters are remembered), switches for case, whole
-word, regex and preserving case — the panel's border says their keys — and
-each result shows the line it matched. `Alt-a` replaces every match on
-screen: the files are changed but left unsaved, and one undo takes it back.
-
-![The search panel with replace and filters](fork/screenshots/search.png)
-
-## Search and replace in this file
-
-`Ctrl-f` opens the same panel on the file you are editing, its name on the
-border: the matches listed by line, the file beside them, the same switches.
-`Alt-a` replaces every match in it, unsaved, and one undo takes it back.
-`Ctrl-g` asks for a line number and goes there, following it as you type.
-
-![The search panel on one file, its matches by line](fork/screenshots/search-file.png)
 
 ## Markdown, as it reads
 
@@ -370,6 +384,11 @@ same commands again to update:
 curl -fsSL https://raw.githubusercontent.com/scorredoira/sid/master/fork/install.sh -o /tmp/install-sid.sh
 sh /tmp/install-sid.sh
 ```
+
+To update, run `sid --update`, or **Check for updates** on the welcome screen: either
+installs the latest release beside the one running, and the next start is the new one.
+A build from source updates with `git pull` and `./build.sh` instead, and the portable
+`.run` file by downloading the new one.
 
 `SID_VERSION=vYYYY.M.N` (a release tag) installs that release instead of the latest, and
 `SID_PREFIX` an absolute prefix other than `~/.local`.

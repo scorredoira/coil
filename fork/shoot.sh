@@ -135,6 +135,12 @@ keys Tab
 typed selected
 shoot search-file 2
 
+# The symbols of a file, from its syntax tree: no language server to wait on.
+start helix-term/src/ui/editor.rs
+keys Space s
+typed render
+shoot symbols 2
+
 # Neither Ctrl-Shift-b nor Ctrl-Shift-m crosses tmux, so the preview is asked for by name.
 start README.md
 keys Space '?'
