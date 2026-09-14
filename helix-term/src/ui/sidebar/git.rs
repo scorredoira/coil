@@ -122,6 +122,9 @@ pub struct BlameRequest {
 
 pub type Answer<T> = Result<T, String>;
 
+/// What git's answer reads as outside a repository: a fact about the folder, not a failure.
+pub const NOT_A_REPOSITORY: &str = "not a git repository";
+
 /// A pathspec naming one path from the repository's top, taken literally.
 pub fn pathspec(top_relative: &str) -> String {
     format!(":(top,literal){top_relative}")
@@ -469,6 +472,9 @@ fn run(dir: &Path, args: &[&str]) -> Answer<Vec<u8>> {
         .map_err(|err| format!("git: {err}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("not a git repository") {
+            return Err(NOT_A_REPOSITORY.to_string());
+        }
         let reason = stderr.lines().next().unwrap_or("failed").to_string();
         return Err(format!("git {}: {reason}", args[0]));
     }

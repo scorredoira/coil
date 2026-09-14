@@ -514,7 +514,7 @@ impl TabView for CommitsTab {
         let (text, is_error) = match &self.log {
             None => ("reading git log…".to_string(), false),
             Some(Ok(_)) => ("no commits".to_string(), false),
-            Some(Err(err)) => (err.clone(), true),
+            Some(Err(err)) => (err.clone(), err != git::NOT_A_REPOSITORY),
         };
         Some(Message { text, is_error })
     }

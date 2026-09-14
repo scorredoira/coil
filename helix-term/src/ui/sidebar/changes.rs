@@ -336,7 +336,7 @@ impl TabView for ChangesTab {
         let (text, is_error) = match &self.answer {
             None => ("reading git status…".to_string(), false),
             Some(Ok(_)) => ("no changes".to_string(), false),
-            Some(Err(err)) => (err.clone(), true),
+            Some(Err(err)) => (err.clone(), err != git::NOT_A_REPOSITORY),
         };
         Some(Message { text, is_error })
     }

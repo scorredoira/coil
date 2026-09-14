@@ -622,7 +622,7 @@ impl Sidebar {
             (KeyCode::Left, _) => {
                 self.collapse_or_parent(editor);
             }
-            (KeyCode::F(5), _) => {
+            (KeyCode::F(5), KeyModifiers::NONE) => {
                 let (tab, diff) = self.parts();
                 let mut tab_cx = TabContext { editor, diff };
                 tab.refresh(&mut tab_cx);

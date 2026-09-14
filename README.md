@@ -268,6 +268,7 @@ So the keys are the ones you already know:
 | `Ctrl-o` / `Ctrl-t` | Go to a symbol in the file / in the project |
 | `Ctrl-b` / `Ctrl-e` / `Ctrl-r` | The sidebar: show or hide / focus / reveal this file |
 | `Shift-F11` | Collapse every directory of the file tree, wherever the focus is |
+| `Shift-F5` | Check for a newer release of sid, and install it if you say so |
 | `Ctrl-PageUp` / `Ctrl-PageDown` | The tab before / after this one |
 | `Ctrl-\` | Split the editor |
 | `F12` / `Shift-F12` | Go to the definition / to the references |
