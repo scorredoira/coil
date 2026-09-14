@@ -76,6 +76,10 @@ jobs:
           tar -xzf dist/*.tar.gz -C "$smoke"
           app=$(find "$smoke" -name sid -type f)
           "$app" --version
+          # A release names itself after its tag, or --update could never tell it is behind.
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            "$app" --version | grep -F "sid ${{ github.ref_name }}"
+          fi
           "$app" --health rust
           SID_PREFIX="$smoke/install" sh "$(dirname "$app")/install.sh"
           "$smoke/install/bin/sid" --version
@@ -145,7 +149,8 @@ jobs:
           ARTIFACTS_RUN_ID: ${{ inputs.artifacts_run_id || github.run_id }}
         run: |
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          # --force: checked out from the tag, the runner already holds it as a lightweight one.
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
           test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$(gh run view "$ARTIFACTS_RUN_ID" --json headSha --jq .headSha)"
           cd dist
           sha256sum *.tar.gz *.run > SHA256SUMS
