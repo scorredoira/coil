@@ -1,8 +1,6 @@
 <div align="center">
 
-<img alt="" height="128" src="fork/logo.svg">
-
-# sid
+<img alt="sid" height="96" src="fork/wordmark.svg">
 
 **A terminal code editor you already know how to use.**
 
@@ -217,7 +215,7 @@ So the keys are the ones you already know:
 | `Ctrl-Shift` + `↑` / `↓` | Grow the selection to the enclosing code, and back |
 | `Ctrl-/` | Comment, or uncomment |
 | `Tab` / `Shift-Tab` | Indent, or unindent |
-| `Ctrl-n` / `Ctrl-w` | A new buffer / close this one |
+| `Ctrl-n` / `Ctrl-w` / `Shift-F4` | A new buffer / close this one / close them all |
 | `Ctrl-s` / `Ctrl-Shift-s` | Save / save under a name |
 | `Ctrl-p` | Open a file by name |
 | `Ctrl-Shift-p` | The command palette |
@@ -230,6 +228,7 @@ So the keys are the ones you already know:
 | `Ctrl-g` | Go to a line |
 | `Ctrl-Shift-o` / `Ctrl-t` | Go to a symbol in the file / in the project |
 | `Ctrl-b` / `Ctrl-Shift-e` / `Ctrl-Shift-r` | The sidebar: show or hide / focus / reveal this file |
+| `Shift-F11` | Collapse every directory of the file tree, wherever the focus is |
 | `Ctrl-PageUp` / `Ctrl-PageDown` | The tab before / after this one |
 | `Ctrl-\` | Split the editor |
 | `F12` / `Shift-F12` | Go to the definition / to the references |
@@ -252,6 +251,13 @@ Where a keyboard puts `/`, `\` or `]` behind another key — a Spanish layout do
 `7` key and `Ctrl-\` to `º`. Everything is in `defaults.toml`, laid under your
 own `config.toml` — and a key meant for every mode is written once, under
 `[keys.all]`, in that file and in yours alike; a mode's own table wins over it.
+
+With nothing open — a project opened for the first time, or the last tab closed —
+sid does not leave you in front of an empty buffer: it shows where to start,
+and every line runs what it names, by its keys or with a click. The keys shown
+are the ones your configuration binds.
+
+![The welcome screen, with nothing open](fork/screenshots/welcome.png)
 
 While typing, a selection behaves as it does in any other editor: `Shift` with
 an arrow, `Home` or `End` grows it from the cursor, the mouse drags one, typing
