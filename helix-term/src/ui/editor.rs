@@ -171,7 +171,30 @@ enum BufferlineHit {
 }
 
 /// The bufferline's rows: a half-row of padding over the names and one under them.
-const BUFFERLINE_HEIGHT: u16 = 2;
+/// The rows the tab strip takes: the names, and under them the half row the tab in front
+/// runs on into the editor through. A theme that gives the tab in front no colour of its
+/// own, as the 16-colour ones do, has no shape to draw, and the strip is the names alone.
+fn bufferline_height(theme: &Theme) -> u16 {
+    if bufferline_shaped(theme) {
+        2
+    } else {
+        1
+    }
+}
+
+/// Whether the tab in front has a colour the bar does not, over an editor with a colour of
+/// its own: what drawing it as a tab takes.
+fn bufferline_shaped(theme: &Theme) -> bool {
+    let background = theme
+        .try_get("ui.bufferline.background")
+        .unwrap_or_else(|| theme.get("ui.statusline"))
+        .bg;
+    let active = theme
+        .try_get("ui.bufferline.active")
+        .unwrap_or_else(|| theme.get("ui.statusline.active"))
+        .bg;
+    active.is_some() && active != background && theme.get("ui.background").bg.is_some()
+}
 
 /// How many lines a click has to land away from the cursor to count as a jump.
 const JUMP_LINES: usize = 10;
@@ -838,11 +861,21 @@ impl EditorView {
         // The tab in front is told apart by its shape and its colour. The underline the
         // status line wears comes along when a theme has no tab colours of its own, and
         // under a title it reads as a stray rule.
+        let shaped = bufferline_shaped(&editor.theme);
+        let height = bufferline_height(&editor.theme);
         let bufferline_active = editor
             .theme
             .try_get("ui.bufferline.active")
             .unwrap_or_else(|| editor.theme.get("ui.statusline.active"))
             .underline_style(UnderlineStyle::Reset);
+        // Without a colour of its own, the tab in front is cut out of the bar, in bold.
+        let bufferline_active = if shaped {
+            bufferline_active
+        } else {
+            bufferline_active
+                .bg(Color::Reset)
+                .add_modifier(Modifier::BOLD)
+        };
 
         let bufferline_inactive = editor
             .theme
@@ -863,8 +896,10 @@ impl EditorView {
         let bottom = top + 1;
 
         // The bar ends half-way down its last row, so it sits on the editor.
-        for x in viewport.left()..viewport.right() {
-            draw_half_block(surface, x, bottom, background, editor_background);
+        if shaped {
+            for x in viewport.left()..viewport.right() {
+                draw_half_block(surface, x, bottom, background, editor_background);
+            }
         }
 
         let current_doc = view!(editor).doc;
@@ -920,7 +955,7 @@ impl EditorView {
 
         let mut x = viewport.x;
         if first > 0 {
-            let area = Rect::new(x, top, MARK_WIDTH, BUFFERLINE_HEIGHT);
+            let area = Rect::new(x, top, MARK_WIDTH, height);
             surface.set_string(x, middle, "‹", bufferline_inactive);
             self.bufferline_back = Some(area);
             x += MARK_WIDTH;
@@ -935,9 +970,11 @@ impl EditorView {
             let tab_background = style.bg.or(background);
             let width = tab.width();
 
-            let area = Rect::new(x, top, width, BUFFERLINE_HEIGHT);
+            let area = Rect::new(x, top, width, height);
             for column in area.left()..area.right() {
-                draw_half_block(surface, column, bottom, tab_background, editor_background);
+                if shaped {
+                    draw_half_block(surface, column, bottom, tab_background, editor_background);
+                }
             }
 
             let close = x + tab.name.width() as u16;
@@ -958,7 +995,7 @@ impl EditorView {
 
         if first + shown < tabs.len() {
             let x = viewport.right() - MARK_WIDTH;
-            let area = Rect::new(x, top, MARK_WIDTH, BUFFERLINE_HEIGHT);
+            let area = Rect::new(x, top, MARK_WIDTH, height);
             surface.set_string(x + 1, middle, "›", bufferline_inactive);
             self.bufferline_forward = Some(area);
         }
@@ -2248,7 +2285,7 @@ impl Component for EditorView {
         let preview_area = editor_area.clip_left(editor_area.width - preview_width);
         editor_area = editor_area.clip_right(preview_width);
         if use_bufferline {
-            editor_area = editor_area.clip_top(BUFFERLINE_HEIGHT);
+            editor_area = editor_area.clip_top(bufferline_height(&cx.editor.theme));
         }
 
         // if the terminal size suddenly changed, we need to trigger a resize
@@ -2256,8 +2293,12 @@ impl Component for EditorView {
 
         let welcome = !code_hidden && !full_preview && cx.editor.nothing_open();
         if use_bufferline && !code_hidden && !welcome {
-            let bufferline_area =
-                Rect::new(editor_area.x, area.y, editor_area.width, BUFFERLINE_HEIGHT);
+            let bufferline_area = Rect::new(
+                editor_area.x,
+                area.y,
+                editor_area.width,
+                bufferline_height(&cx.editor.theme),
+            );
             self.render_bufferline(cx.editor, bufferline_area, surface);
         } else {
             self.clear_bufferline();
