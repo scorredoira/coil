@@ -750,13 +750,16 @@ impl EditorView {
             if range.head > range.anchor {
                 // Standard case.
                 let cursor_start = prev_grapheme_boundary(text, range.head);
-                // non block cursors look like they exclude the cursor
-                let selection_end =
-                    if selection_is_primary && !cursor_is_block && mode != Mode::Insert {
-                        range.head
-                    } else {
-                        cursor_start
-                    };
+                // Explicit insert selections replace the entire range when typing,
+                // including the grapheme beneath the terminal's bar/underline cursor.
+                let selection_end = if selection_is_primary
+                    && !cursor_is_block
+                    && (mode != Mode::Insert || view.insert_selection)
+                {
+                    range.head
+                } else {
+                    cursor_start
+                };
                 spans.push((selection_scope, range.anchor..selection_end));
                 // add block cursors
                 // skip primary cursor if terminal is unfocused - terminal cursor is used in that case
@@ -774,7 +777,9 @@ impl EditorView {
                 // non block cursors look like they exclude the cursor
                 let selection_start = if selection_is_primary
                     && !cursor_is_block
-                    && !(mode == Mode::Insert && cursor_end == range.anchor)
+                    && !(mode == Mode::Insert
+                        && !view.insert_selection
+                        && cursor_end == range.anchor)
                 {
                     range.head
                 } else {
