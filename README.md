@@ -68,9 +68,9 @@ on the screen. By now it is a different editor, so it has a name of its own:
 The editor's own keys — `Ctrl-q`, `Ctrl-s`, `F12` — work while the sidebar has
 the focus.
 
-`Ctrl-b` shows or hides it and `Ctrl-Shift-e` focuses it; started on a file
+`Ctrl-b` shows or hides it and `Ctrl-e` focuses it; started on a file
 (`sid foo.ts`), the editor opens without it. It follows the file you are
-editing, and `Ctrl-Shift-r` takes you to that file in the tree from wherever
+editing, and `Ctrl-r` takes you to that file in the tree from wherever
 you are. Inside it the arrows move, `Enter`
 opens, and **typing walks to the file whose name you are typing**, the way an
 explorer does; `Ctrl-f` opens a filter on the top row instead, and the tree
@@ -92,7 +92,8 @@ on screen again at once.
 
 ## Search and replace across the project
 
-`Ctrl-Shift-f` opens a panel with a replace box and
+`Ctrl-Shift-f` — or `Ctrl-f` pressed twice, which widens the search of the file to
+the project — opens a panel with a replace box and
 include/exclude filters (the filters are remembered), switches for case, whole
 word, regex and preserving case — the panel's border says their keys — and
 each result shows the line it matched. `Alt-a` replaces every match on
@@ -113,7 +114,7 @@ border: the matches listed by line, the file beside them, the same switches.
 
 `F12` goes to the definition of what is under the cursor and `Shift-F12` lists
 its references; `F2` renames it everywhere, and `F8` walks to the next problem
-the language server found. `Ctrl-Shift-o` lists the symbols of the file and
+the language server found. `Ctrl-o` lists the symbols of the file and
 `Ctrl-t` those of the whole project, filtered as you type — from the language
 server when there is one, and from the syntax tree when there is not, so they
 work on any file sid can highlight. `Ctrl-Alt-←` and `Ctrl-Alt-→` take you back
@@ -247,7 +248,7 @@ So the keys are the ones you already know:
 | `Ctrl-Home` / `Ctrl-End` | To the start and the end of the file |
 | `Backspace` / `Delete` | Delete the selection, or one character |
 | `Ctrl-Backspace` / `Ctrl-Delete` | Delete a whole word |
-| `Ctrl-d` | Select the word, then where it appears next — one more caret each time |
+| `Ctrl-d` / `Ctrl-l` | Select the word, then where it appears next — one more caret each time / every place at once |
 | `Ctrl-Shift-d` / `Ctrl-Shift-k` | Duplicate / delete the line |
 | `Ctrl` + `↑` / `↓` | Move the line up or down |
 | `Ctrl-Shift` + `↑` / `↓` | Grow the selection to the enclosing code, and back |
@@ -256,16 +257,16 @@ So the keys are the ones you already know:
 | `Ctrl-n` / `Ctrl-w` / `Shift-F4` | A new buffer / close this one / close them all |
 | `Ctrl-s` / `Ctrl-Shift-s` | Save / save under a name |
 | `Ctrl-p` | Open a file by name |
-| `Ctrl-Shift-p` | The command palette |
-| `F1` | Searchable keyboard shortcut reference (including sidebar controls) |
+| `F1` / `Ctrl-Shift-p` | The command palette: every command, searchable, with its keys |
+| `Shift-F1` | Searchable keyboard shortcut reference (including sidebar controls) |
 | `F4` | Commit diff: full file context / changed sections |
 | `F6` / `F7` | Show or hide the commits / code panel |
 | `Ctrl-Alt-b` / `Ctrl-Alt-l` | Who changed this line / this file's history |
 | `Ctrl-f` / `F3` / `Shift-F3` | Search in this file / next match / previous |
-| `Ctrl-Shift-f` | Search and replace across the project |
+| `Ctrl-Shift-f`, or `Ctrl-f` twice | Search and replace across the project |
 | `Ctrl-g` | Go to a line |
-| `Ctrl-Shift-o` / `Ctrl-t` | Go to a symbol in the file / in the project |
-| `Ctrl-b` / `Ctrl-Shift-e` / `Ctrl-Shift-r` | The sidebar: show or hide / focus / reveal this file |
+| `Ctrl-o` / `Ctrl-t` | Go to a symbol in the file / in the project |
+| `Ctrl-b` / `Ctrl-e` / `Ctrl-r` | The sidebar: show or hide / focus / reveal this file |
 | `Shift-F11` | Collapse every directory of the file tree, wherever the focus is |
 | `Ctrl-PageUp` / `Ctrl-PageDown` | The tab before / after this one |
 | `Ctrl-\` | Split the editor |
@@ -348,12 +349,21 @@ it touches, so the rest of the file, comments included, stays as you wrote it.
 
 ## Find a shortcut
 
-`F1` opens a centered reference over the editor. Type to search your configured
-shortcuts, use `Tab` to filter by mode or sidebar, and `Esc` to close it.
+`F1` opens the command palette: every command, searchable, with the keys bound to
+it. `Shift-F1` opens a centered reference of the shortcuts over the editor. Type to
+search your configured shortcuts, use `Tab` to filter by mode or sidebar, and `Esc`
+to close it.
+
+Not every terminal sends every key. Terminal.app, the Linux console and most
+terminals reached over SSH send no `Cmd`, and send `Ctrl-Shift` with a letter as
+`Ctrl` with it. sid notices, says so once when it starts, and the palette, the
+reference and the welcome screen show only the keys that terminal sends. Everything
+that matters has one: `F1` for any command, `Ctrl-f` twice for the project search,
+and `Ctrl-e`, `Ctrl-r`, `Ctrl-o` and `Ctrl-l` alongside their `Ctrl-Shift` twins.
 
 ![The shortcut reference filtered to code review controls](fork/screenshots/shortcuts.png)
 
-For a temporary visit to normal mode, open `Ctrl-Shift-P`, run `normal_mode`,
+For a temporary visit to normal mode, open the palette with `F1`, run `normal_mode`,
 and press `i` when you want to type again. This leaves your settings alone.
 
 ## If you know Helix
@@ -475,7 +485,7 @@ grammar, so it takes a few minutes.
 `git pull`, a switch of branch — does nothing until you run `./build.sh` again
 and restart sid.** A change only to documentation needs no rebuild.
 
-To know which build you are running, `F1` shows it at the top right and
+To know which build you are running, `Shift-F1` shows it at the top right and
 `sid --version` prints it: `v2026.9.17` is that release, `v2026.9.17+2
 (3c25a543)` a build two commits past it, at commit `3c25a543`.
 

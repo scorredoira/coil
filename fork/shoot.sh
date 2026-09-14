@@ -82,7 +82,7 @@ review_shots() {
 	keys Enter
 	shoot commits 2
 	keys Escape
-	keys F1
+	keys S-F1
 	typed review_
 	shoot shortcuts
 }
