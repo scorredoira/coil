@@ -171,7 +171,7 @@ enum BufferlineHit {
 }
 
 /// The bufferline's rows: a half-row of padding over the names and one under them.
-const BUFFERLINE_HEIGHT: u16 = 3;
+const BUFFERLINE_HEIGHT: u16 = 2;
 
 /// How many lines a click has to land away from the cursor to count as a jump.
 const JUMP_LINES: usize = 10;
@@ -856,9 +856,11 @@ impl EditorView {
             .bg;
         let editor_background = editor.theme.get("ui.background").bg;
 
+        // The names on the first row, and under them the bar ends half-way down, where the tab
+        // in front runs on into the editor.
         let top = viewport.y;
-        let middle = top + 1;
-        let bottom = top + 2;
+        let middle = top;
+        let bottom = top + 1;
 
         // The bar ends half-way down its last row, so it sits on the editor.
         for x in viewport.left()..viewport.right() {
@@ -935,7 +937,6 @@ impl EditorView {
 
             let area = Rect::new(x, top, width, BUFFERLINE_HEIGHT);
             for column in area.left()..area.right() {
-                draw_half_block(surface, column, top, background, tab_background);
                 draw_half_block(surface, column, bottom, tab_background, editor_background);
             }
 
