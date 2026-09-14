@@ -47,7 +47,7 @@ pub struct Shortcuts {
     tabs: Vec<Rect>,
 }
 
-fn key_label(key: KeyEvent) -> String {
+pub(crate) fn key_label(key: KeyEvent) -> String {
     let mut parts = Vec::new();
     let mut code = key;
     code.modifiers = KeyModifiers::NONE;

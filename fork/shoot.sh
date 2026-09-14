@@ -87,10 +87,24 @@ review_shots() {
 	shoot shortcuts
 }
 
+# Nothing open yet: what the editor shows before there is a file to show.
+welcome_shot() {
+	start
+	shoot welcome
+}
+
+if [[ "${1:-}" == "--welcome-only" ]]; then
+	welcome_shot
+	exit 0
+fi
+
 if [[ "${1:-}" == "--review-only" ]]; then
 	review_shots
 	exit 0
 fi
+
+# First, while no run has left a session behind to reopen.
+welcome_shot
 
 start helix-term/src/ui/editor.rs helix-term/src/ui/sidebar/commits.rs
 keys Space T

@@ -1305,6 +1305,9 @@ pub struct Editor {
     pub tree: Tree,
     pub next_document_id: DocumentId,
     pub documents: BTreeMap<DocumentId, Document>,
+    /// The blank buffer the editor put up itself because there was nothing to show: while
+    /// it is all there is, the screen welcomes instead of showing an empty tab.
+    pub placeholder: Option<DocumentId>,
 
     // We Flatten<> to resolve the inner DocumentSavedEventFuture. For that we need a stream of streams, hence the Once<>.
     // https://stackoverflow.com/a/66875668
@@ -1459,6 +1462,7 @@ impl Editor {
             tree: Tree::new(area),
             next_document_id: DocumentId::default(),
             documents: BTreeMap::new(),
+            placeholder: None,
             saves: HashMap::new(),
             save_queue: SelectAll::new(),
             write_count: 0,
@@ -2107,12 +2111,31 @@ impl Editor {
         self.new_file_from_document(action, doc)
     }
 
+    /// Whether nothing is open: the one buffer is the blank the editor put up itself, still
+    /// untouched and alone on screen.
+    pub fn nothing_open(&self) -> bool {
+        let Some(id) = self.placeholder else {
+            return false;
+        };
+        let mut documents = self.documents.values();
+        let (Some(doc), None) = (documents.next(), documents.next()) else {
+            return false;
+        };
+        // Unmodified, it still holds only the line ending it was made with.
+        doc.id() == id
+            && doc.path().is_none()
+            && !doc.is_modified()
+            && self.tree.views().count() == 1
+    }
+
     /// `Untitled`, then `Untitled 2`, `Untitled 3`…: the lowest one no buffer is already
     /// going by, so two tabs are never called the same thing.
     fn next_scratch_name(&self) -> String {
+        // The blank put up for nothing being open gives way to what is opened next.
+        let placeholder = self.placeholder.filter(|_| self.nothing_open());
         let taken: Vec<&str> = self
             .documents()
-            .filter(|doc| doc.path().is_none())
+            .filter(|doc| doc.path().is_none() && Some(doc.id()) != placeholder)
             .map(|doc| doc.scratch_name())
             .collect();
 
@@ -2271,10 +2294,11 @@ impl Editor {
                 .map(|(&doc_id, _)| doc_id)
                 .next()
                 .unwrap_or_else(|| {
-                    self.new_document(Document::default(
-                        self.config.clone(),
-                        self.syn_loader.clone(),
-                    ))
+                    let mut doc = Document::default(self.config.clone(), self.syn_loader.clone());
+                    doc.scratch_name = Some(self.next_scratch_name());
+                    let doc_id = self.new_document(doc);
+                    self.placeholder = Some(doc_id);
+                    doc_id
                 });
             let view = View::new(doc_id, self.config().gutters.clone());
             let view_id = self.tree.insert(view);

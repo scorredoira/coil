@@ -13,6 +13,7 @@ use crate::{
         sidebar::{self, Sidebar},
         statusline,
         text_decorations::{self, Decoration, DecorationManager, InlineDiagnostics},
+        welcome::Welcome,
         Completion, Popup, ProgressSpinners,
     },
 };
@@ -51,6 +52,7 @@ use tui::{buffer::Buffer as Surface, text::Span};
 
 pub struct EditorView {
     pub keymaps: Keymaps,
+    welcome: Welcome,
     on_next_key: Option<(OnKeyCallback, OnKeyCallbackKind)>,
     pseudo_pending: Vec<KeyEvent>,
     pub(crate) last_insert: (commands::MappableCommand, Vec<InsertEvent>),
@@ -214,6 +216,7 @@ impl EditorView {
             pointer_moved_at: Arc::new(Mutex::new(Instant::now())),
             hover_armed: false,
             hover_shown: None,
+            welcome: Welcome::default(),
         }
     }
 
@@ -1512,6 +1515,19 @@ impl EditorView {
             return self.markdown_preview.handle_mouse(event, cxt);
         }
 
+        // With nothing open, a click runs the welcome's line under it and nothing else: there
+        // is no text to select.
+        if cxt.editor.nothing_open() && !self.sidebar.code_hidden() {
+            if kind == MouseEventKind::Down(MouseButton::Left) {
+                if let Some(command) = self.welcome.command_at(row, column) {
+                    return EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                        run_command(compositor, cx, command)
+                    })));
+                }
+            }
+            return EventResult::Consumed(None);
+        }
+
         // A split separator is taken before the views see the press, and while it is dragged
         // the mouse moves it instead of selecting text.
         if let Some(separator) = self.dragged_separator {
@@ -2017,6 +2033,19 @@ impl Component for EditorView {
                     }
                 }
 
+                // Nothing is open to type into: a plain key would only fill the blank behind
+                // the welcome. A shortcut goes on to the keymap. Where insert is a mode you
+                // enter, entering it is asking to type, and the typing goes through.
+                if mode == Mode::Insert
+                    && cx.editor.config().default_mode == Mode::Insert
+                    && self.on_next_key.is_none()
+                    && !self.sidebar.focused
+                    && cx.editor.nothing_open()
+                    && !sidebar::is_editor_shortcut(key)
+                {
+                    return EventResult::Consumed(None);
+                }
+
                 if !self.on_next_key(OnKeyCallbackKind::PseudoPending, &mut cx, key) {
                     match mode {
                         Mode::Insert => {
@@ -2183,7 +2212,8 @@ impl Component for EditorView {
         // if the terminal size suddenly changed, we need to trigger a resize
         cx.editor.resize(editor_area);
 
-        if use_bufferline && !code_hidden {
+        let welcome = !code_hidden && !full_preview && cx.editor.nothing_open();
+        if use_bufferline && !code_hidden && !welcome {
             let bufferline_area =
                 Rect::new(editor_area.x, area.y, editor_area.width, BUFFERLINE_HEIGHT);
             self.render_bufferline(cx.editor, bufferline_area, surface);
@@ -2195,6 +2225,11 @@ impl Component for EditorView {
         // not drawn at all: the file is behind it.
         if code_hidden {
             self.markdown_preview.hide();
+        } else if welcome {
+            self.markdown_preview.hide();
+            let keymaps = self.keymaps.map();
+            self.welcome
+                .render(editor_area, surface, cx.editor, &keymaps);
         } else if full_preview {
             self.markdown_preview
                 .render_full(editor_area, surface, cx.editor);
@@ -2303,7 +2338,7 @@ impl Component for EditorView {
 
     fn cursor(&self, _area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
         // Nothing on screen is being edited while the preview has it to itself.
-        if self.sidebar.focused || self.markdown_preview.full {
+        if self.sidebar.focused || self.markdown_preview.full || editor.nothing_open() {
             return (None, CursorKind::Hidden);
         }
 

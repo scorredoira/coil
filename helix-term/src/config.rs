@@ -294,6 +294,8 @@ mod tests {
             assert_eq!(command_at(&config, mode, &["C-F"]), "global_search");
             assert_eq!(command_at(&config, mode, &["C-b"]), "sidebar_toggle");
             assert_eq!(command_at(&config, mode, &["C-R"]), "sidebar_reveal");
+            assert_eq!(command_at(&config, mode, &["S-F11"]), "sidebar_collapse");
+            assert_eq!(command_at(&config, mode, &["S-F4"]), "buffer-close-all");
         }
 
         // Escape stays in insert: it closes what is open, it does not change the mode.

@@ -117,7 +117,7 @@ pub struct Sidebar {
 /// Whether a key is a shortcut of the editor's rather than one of the sidebar's. A key
 /// held with Ctrl, Alt or Cmd, and a function key, are shortcuts wherever the focus is;
 /// a plain letter is not, or it would run a command on the file behind the sidebar.
-fn is_editor_shortcut(key: KeyEvent) -> bool {
+pub(crate) fn is_editor_shortcut(key: KeyEvent) -> bool {
     if matches!(key.code, KeyCode::F(_)) {
         return true;
     }
@@ -480,6 +480,25 @@ impl Sidebar {
         };
         folds.close_all(dirs.into_iter());
         tab.rebuild(editor);
+    }
+
+    /// Folds every directory of the file tree, whichever tab is on screen and wherever the
+    /// focus is.
+    pub fn collapse_files(&mut self, editor: &mut Editor) {
+        let dirs: Vec<PathBuf> = self
+            .files
+            .rows()
+            .iter()
+            .filter_map(Row::dir)
+            .map(Path::to_path_buf)
+            .collect();
+        if let Some(folds) = self.files.folds_mut() {
+            folds.close_all(dirs.into_iter());
+        }
+        // Before the first render there are no rows to lay out; showing the tab builds them.
+        if self.built {
+            self.files.rebuild(editor);
+        }
     }
 
     /// Closes the directory under the cursor; on a file or a closed directory, jumps to

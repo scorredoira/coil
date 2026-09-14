@@ -238,7 +238,7 @@ impl Application {
                     align_view(doc, view, Align::Center);
                 }
             } else if !restored {
-                editor.new_file(Action::VerticalSplit);
+                editor.placeholder = Some(editor.new_file(Action::VerticalSplit));
             }
         } else if stdin().is_terminal() || cfg!(feature = "integration") {
             // With no file named, the editor is opened on the project, so it opens what the
@@ -250,7 +250,7 @@ impl Application {
             };
 
             if !restored {
-                editor.new_file(Action::VerticalSplit);
+                editor.placeholder = Some(editor.new_file(Action::VerticalSplit));
             }
         } else {
             editor

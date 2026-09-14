@@ -72,6 +72,10 @@ C-F = "global_search"
 C-b = "sidebar_toggle"
 C-E = "sidebar_focus"
 C-R = "sidebar_reveal"
+# Function keys, so they reach the editor wherever the focus is: F3 and F11 are taken,
+# by search and by the terminal's full screen.
+S-F11 = "sidebar_collapse"
+S-F4 = ":buffer-close-all"
 C-O = "lsp_or_syntax_symbol_picker"
 C-t = "lsp_or_syntax_workspace_symbol_picker"
 C-home = "goto_file_start"
