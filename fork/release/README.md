@@ -11,6 +11,9 @@ curl -fsSL https://raw.githubusercontent.com/scorredoira/sid/master/fork/install
 sh /tmp/install-sid.sh
 ```
 
+Once installed, `sid --update` installs the latest release when there is a newer
+one, and **Check for updates** on the welcome screen does the same after asking.
+
 ## Add sid to PATH permanently
 
 Run the block for your shell once. It saves the PATH setting for future terminals

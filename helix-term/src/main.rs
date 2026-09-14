@@ -59,6 +59,7 @@ FLAGS:
     --log <file>                   Specify a file to use for logging
                                    (default file: {})
     -V, --version                  Print version information
+    --update                       Install the latest release, if it is newer
     --vsplit                       Split all given files vertically into different windows
     --hsplit                       Split all given files horizontally into different windows
     -w, --working-dir <path>       Specify an initial working directory
@@ -76,6 +77,10 @@ FLAGS:
     if args.display_version {
         println!("sid {} (a fork of Helix)", VERSION_AND_GIT_HASH);
         std::process::exit(0);
+    }
+
+    if args.update {
+        return helix_term::update::run_from_command_line();
     }
 
     if args.health {

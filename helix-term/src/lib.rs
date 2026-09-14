@@ -13,6 +13,7 @@ pub mod keymap;
 pub mod logging;
 pub mod session;
 pub mod ui;
+pub mod update;
 
 #[cfg(not(windows))]
 use std::env::var_os;

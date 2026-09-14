@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 pub struct Args {
     pub display_help: bool,
     pub display_version: bool,
+    pub update: bool,
     pub health: bool,
     pub health_arg: Option<String>,
     pub load_tutor: bool,
@@ -47,6 +48,7 @@ impl Args {
             match arg.as_str() {
                 "--" => break, // stop parsing at this point treat the remaining as files
                 "--version" => args.display_version = true,
+                "--update" => args.update = true,
                 "--help" => args.display_help = true,
                 "--strict" => args.strict = true,
                 "--tutor" => args.load_tutor = true,

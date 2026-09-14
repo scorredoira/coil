@@ -775,6 +775,74 @@ fn new_file(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> an
     Ok(())
 }
 
+fn check_updates(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    cx.editor.set_status("Checking for updates…");
+    // Off the main thread: the answer comes from GitHub, and the editor goes on meanwhile.
+    tokio::spawn(async move {
+        let check = tokio::task::spawn_blocking(crate::update::check).await;
+        job::dispatch(move |editor, compositor| {
+            let check = match check {
+                Ok(Ok(check)) => check,
+                Ok(Err(err)) => return editor.set_error(format!("{err:#}")),
+                Err(err) => return editor.set_error(format!("Could not check for updates: {err}")),
+            };
+            let current = helix_loader::VERSION_AND_GIT_HASH;
+            if !check.newer {
+                return editor.set_status(format!(
+                    "sid is up to date: {current} (the latest release is {})",
+                    check.latest
+                ));
+            }
+            let crate::update::Install::Release { prefix } = check.install else {
+                let how = crate::update::how_to_update(&check.install).unwrap_or_default();
+                return editor.set_status(format!("sid {} is out. {how}", check.latest));
+            };
+            let latest = check.latest;
+            let lines = vec![
+                format!("sid {latest} is out; this is {current}."),
+                "It installs beside this one, and the next start is the new one.".to_string(),
+            ];
+            let install: ui::confirm::Choice = Box::new(move |cx| {
+                cx.editor.set_status(format!("Installing sid {latest}…"));
+                tokio::spawn(async move {
+                    let installed = tokio::task::spawn_blocking(move || {
+                        crate::update::install_latest(&prefix, true)
+                    })
+                    .await;
+                    job::dispatch(move |editor, _| match installed {
+                        Ok(Ok(())) => {
+                            editor.set_status(format!("Updated to {latest}: restart sid to use it"))
+                        }
+                        Ok(Err(err)) => editor.set_error(format!("{err:#}")),
+                        Err(err) => editor.set_error(format!("The update stopped: {err}")),
+                    })
+                    .await;
+                });
+            });
+            let answers = vec![
+                ui::confirm::Answer::new("Update now", install),
+                ui::confirm::Answer::new("Later", Box::new(|_| {})),
+            ];
+            compositor.push(Box::new(ui::confirm::Confirm::new(
+                "Update available",
+                lines,
+                answers,
+            )));
+        })
+        .await;
+    });
+
+    Ok(())
+}
+
 fn format(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
@@ -3374,6 +3442,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         signature: Signature {
             positionals: (0, Some(1)),
             flags: &[WRITE_NO_FORMAT_FLAG,WRITE_NO_CODE_ACTIONS_FLAG],
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "check-updates",
+        aliases: &[],
+        doc: "Check for a newer release of sid, and install it if you say so.",
+        fun: check_updates,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
             ..Signature::DEFAULT
         },
     },
