@@ -126,8 +126,10 @@ and forth through where you have been.
 The **Changes** tab (`Tab` inside the sidebar) lists what `git status` names,
 each file with its letter: modified, added, deleted, renamed. The letter sits in
 git's own column — the left one when the change is staged, the right one when
-it is not, both when it is some of each. `Enter` opens the file, and the gutter
-marks the lines that changed.
+it is not, both when it is some of each. A click on a file shows what it changed
+since the last commit, staged or not, and the diff follows the cursor while it is
+on screen; `Enter` or a double click goes over to read it, and `o` opens the file
+itself to edit it, where the gutter marks the lines that changed.
 
 `s` stages the file under the cursor, `u` takes it out of the index, and `d`
 (or `Delete`) throws its working changes away after asking — an untracked file
@@ -136,7 +138,7 @@ read again from disk afterwards. The right button offers the same on the row it
 lands on. The list is asked of git every couple of seconds while the tab is on
 screen, and it stays where you scrolled it.
 
-![The Changes tab: a file modified, one deleted, one added](fork/screenshots/changes.png)
+![The Changes tab beside the diff of the modified file](fork/screenshots/changes.png)
 
 ## The history, and each commit's diff
 
