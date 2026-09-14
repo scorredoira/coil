@@ -82,6 +82,8 @@ pub struct EditorView {
     drag_unit: Option<(ClickUnit, Range)>,
     /// Where the pointer rests.
     pointer: Option<(u16, u16)>,
+    /// The pointer shape last asked of the terminal, so it is asked again only on a change.
+    pointer_shape: Option<&'static str>,
     /// When it last moved, shared with the hover timer so that it can wait out the moves
     /// without waking the editor: a job landing per cell crossed would be a frame per cell.
     pointer_moved_at: Arc<Mutex<Instant>>,
@@ -213,6 +215,7 @@ impl EditorView {
             last_click: None,
             drag_unit: None,
             pointer: None,
+            pointer_shape: None,
             pointer_moved_at: Arc::new(Mutex::new(Instant::now())),
             hover_armed: false,
             hover_shown: None,
@@ -1505,6 +1508,8 @@ impl EditorView {
             }
         }
 
+        self.set_pointer_shape(row, column, cxt.editor);
+
         // A drag of the sidebar's separator stays the sidebar's when the mouse leaves it.
         if self.sidebar.contains(row, column) || self.sidebar.resizing() {
             return self.sidebar.handle_mouse(event, cxt);
@@ -1953,6 +1958,42 @@ impl EditorView {
             false
         }
     }
+}
+
+impl EditorView {
+    /// A text beam over text and an arrow over everything else — the sidebar, the tabs,
+    /// the welcome screen — asked of the terminal with OSC 22. A terminal that does not
+    /// know it leaves the pointer as it was.
+    fn set_pointer_shape(&mut self, row: u16, column: u16, editor: &Editor) {
+        let over_text = !self.sidebar.contains(row, column)
+            && !self.markdown_preview.contains(row, column)
+            && !editor.nothing_open()
+            && editor.tree.views().any(|(view, _)| {
+                let area = view.area;
+                // The last row of a view is its status line.
+                row >= area.y
+                    && row + 1 < area.bottom()
+                    && column >= area.x
+                    && column < area.right()
+            });
+        let shape = if over_text { "text" } else { "default" };
+        if self.pointer_shape == Some(shape) {
+            return;
+        }
+        self.pointer_shape = Some(shape);
+        write_pointer_shape(shape);
+    }
+}
+
+/// Writes an OSC 22 pointer shape; an empty one gives the terminal its own back.
+pub fn write_pointer_shape(shape: &str) {
+    if cfg!(feature = "integration") {
+        return;
+    }
+    use std::io::Write;
+    let mut stdout = std::io::stdout().lock();
+    let _ = write!(stdout, "\x1b]22;{shape}\x1b\\");
+    let _ = stdout.flush();
 }
 
 impl Component for EditorView {

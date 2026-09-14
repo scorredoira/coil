@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use helix_view::editor::Action;
 use helix_view::Editor;
 
+use super::diff_view::{DiffSource, DiffTarget};
 use super::entries::{self, Folds, Row};
 use super::git::{self, Change, ChangedFile};
 use super::list::List;
@@ -32,7 +33,12 @@ pub struct ChangesTab {
     /// The file the list was last put mid-screen for, so a later answer does not move the
     /// list from where the reader scrolled it to.
     centered: Option<PathBuf>,
+    /// Counts cursor moves, so only the move the cursor rested on shows its diff.
+    moves: usize,
 }
+
+/// How long the cursor rests on a file before its diff is asked for.
+const PREVIEW_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// What git was asked to do to a file, so the answer says what failed and what to do next.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -72,7 +78,55 @@ impl ChangesTab {
             again: false,
             armed: false,
             centered: None,
+            moves: 0,
         }
+    }
+
+    /// The diff of the changed file under the cursor, against the last commit.
+    fn diff_target(&self) -> Option<DiffTarget> {
+        let file = self.file_under_cursor()?;
+        let name = file.path.file_name().map_or_else(
+            || file.path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        Some(DiffTarget {
+            pathspecs: Vec::new(),
+            name: format!("{name} (changes)"),
+            source: DiffSource::WorkingTree(file),
+        })
+    }
+
+    /// Shows the diff of the file under the cursor, asked again: the file may have
+    /// changed since it was last shown.
+    fn show_diff(&self, cx: &mut TabContext) -> bool {
+        let Some(target) = self.diff_target() else {
+            return false;
+        };
+        let loader = cx.editor.syn_loader.load_full();
+        cx.diff.forget();
+        cx.diff.ask(target, loader);
+        true
+    }
+
+    /// Opens the file under the cursor to edit it.
+    pub fn open_file(&self, editor: &mut Editor) -> bool {
+        let Some(entry) = self.rows.get(self.list.cursor).and_then(Row::entry) else {
+            return false;
+        };
+        let relative = entry.path.strip_prefix(&self.root).unwrap_or(&entry.path);
+        if entry.change == Some(Change::Deleted) {
+            editor.set_status(format!("{} is deleted", relative.display()));
+            return false;
+        }
+        if let Err(err) = editor.open(&entry.path, Action::Replace) {
+            editor.set_error(format!(
+                "unable to open \"{}\": {}",
+                relative.display(),
+                err
+            ));
+            return false;
+        }
+        true
     }
 
     /// Asks git status, off the main thread; the answer lands in `landed`. An ask while
@@ -311,25 +365,35 @@ impl TabView for ChangesTab {
         self.ask();
     }
 
-    fn open(&mut self, cx: &mut TabContext, _how: Activation) -> Outcome {
-        let Some(entry) = self.rows.get(self.list.cursor).and_then(Row::entry) else {
-            return Outcome::Stay;
-        };
-        if entry.change == Some(Change::Deleted) {
-            let relative = entry.path.strip_prefix(&self.root).unwrap_or(&entry.path);
-            cx.editor
-                .set_status(format!("{} is deleted", relative.display()));
+    /// A click shows what the file changed; Enter or a double click goes over to read it.
+    /// `o` opens the file itself.
+    fn open(&mut self, cx: &mut TabContext, how: Activation) -> Outcome {
+        if !self.show_diff(cx) {
             return Outcome::Stay;
         }
-        if let Err(err) = cx.editor.open(&entry.path, Action::Replace) {
-            cx.editor.set_error(format!(
-                "unable to open \"{}\": {}",
-                entry.path.display(),
-                err
-            ));
-            return Outcome::Stay;
+        match how {
+            Activation::Click => Outcome::Stay,
+            Activation::Enter => Outcome::Leave,
         }
-        Outcome::Leave
+    }
+
+    /// While a diff is on screen, it follows the cursor once the cursor rests.
+    fn cursor_moved(&mut self, cx: &mut TabContext) {
+        if !cx.diff.is_on_screen(cx.editor) {
+            return;
+        }
+        self.moves = self.moves.wrapping_add(1);
+        let move_number = self.moves;
+        super::later(PREVIEW_DELAY, move |sidebar, editor| {
+            if sidebar.changes.moves != move_number || !sidebar.showing(TabKind::Changes) {
+                return;
+            }
+            let mut cx = TabContext {
+                editor,
+                diff: &mut sidebar.diff,
+            };
+            sidebar.changes.show_diff(&mut cx);
+        });
     }
 
     fn reveal(&mut self, _editor: &mut Editor, path: &Path) {

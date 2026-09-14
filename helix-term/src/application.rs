@@ -1343,6 +1343,8 @@ impl Application {
 
     fn restore_term(&mut self) -> std::io::Result<()> {
         use helix_view::graphics::CursorKind;
+        // The pointer goes back to the terminal's own shape with the rest of the screen.
+        ui::editor::write_pointer_shape("");
         self.terminal
             .backend_mut()
             .show_cursor(CursorKind::Block)

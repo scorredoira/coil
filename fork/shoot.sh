@@ -222,4 +222,6 @@ git -C "$demo" rm --quiet helix-term/src/ui/sidebar/tab.rs
 start + helix-term/src/ui/sidebar/list.rs
 keys Space T
 keys Tab
+# The file the cursor is on shows what changed in it.
+keys Enter
 shoot changes 2

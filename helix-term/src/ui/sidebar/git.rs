@@ -329,6 +329,63 @@ pub fn show(root: &Path, hash: &str, pathspecs: &[String], full_context: bool) -
     Ok(String::from_utf8_lossy(&patch).into_owned())
 }
 
+/// What `file` changed in the working tree against the last commit, staged or not, as the
+/// same canonical patch `show` gives for a commit. A file git does not know yet reads as
+/// added whole.
+pub fn working_diff(root: &Path, file: &ChangedFile, full_context: bool) -> Answer<String> {
+    let context = if full_context {
+        "--unified=2147483647"
+    } else {
+        "--unified=3"
+    };
+    let common = [
+        "--no-textconv",
+        "--no-relative",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        context,
+        "--no-color",
+        "--no-ext-diff",
+    ];
+    if file.is_untracked() {
+        // Against nothing, which git answers with 1 for "they differ".
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["diff", "--no-index"])
+            .args(common)
+            .arg("--")
+            .arg("/dev/null")
+            .arg(file.path.strip_prefix(root).unwrap_or(&file.path))
+            .output()
+            .map_err(|err| format!("git: {err}"))?;
+        if output.status.code() != Some(1) && !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!(
+                "git diff: {}",
+                stderr.lines().next().unwrap_or("failed")
+            ));
+        }
+        return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+    }
+    let path = format!(":(literal){}", file.path.display());
+    let from = file.from.as_deref().map(pathspec);
+    // Before the first commit there is nothing to compare with but the index.
+    let base = if run(root, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok() {
+        "HEAD"
+    } else {
+        "--cached"
+    };
+    let mut args = vec!["diff", base];
+    args.extend(common);
+    args.extend(["-M", "--", path.as_str()]);
+    if let Some(from) = &from {
+        args.push(from);
+    }
+    let patch = run(root, &args)?;
+    Ok(String::from_utf8_lossy(&patch).into_owned())
+}
+
 /// Blames one line of the buffer's text as git would the file with that text in it: a line
 /// changed since the last commit belongs to no commit.
 pub fn blame(root: &Path, request: &BlameRequest) -> Answer<Blame> {

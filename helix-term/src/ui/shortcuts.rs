@@ -169,6 +169,12 @@ impl Shortcuts {
                 "Delete",
                 "Delete the selected item after confirmation",
             ),
+            (
+                "Changes",
+                "Click / Enter",
+                "Show what the selected file changed",
+            ),
+            ("Changes", "o", "Open the selected file to edit it"),
             ("Changes", "s / u", "Stage / unstage the selected file"),
             (
                 "Changes",

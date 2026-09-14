@@ -699,6 +699,13 @@ impl Sidebar {
         key: KeyEvent,
         cx: &mut commands::Context,
     ) -> Option<EventResult> {
+        if (key.code, key.modifiers) == (KeyCode::Char('o'), KeyModifiers::NONE) {
+            if self.changes.open_file(cx.editor) {
+                self.code_hidden = false;
+                self.focused = false;
+            }
+            return Some(EventResult::Consumed(None));
+        }
         let act = match (key.code, key.modifiers) {
             (KeyCode::Char('s'), KeyModifiers::NONE) => Act::Stage,
             (KeyCode::Char('u'), KeyModifiers::NONE) => Act::Unstage,
@@ -962,6 +969,10 @@ impl Sidebar {
         // only a background, one the sidebar's dimmed text barely shows on, so the menu's
         // own text colour comes along. Without focus the bold current file is the only mark.
         let selected_style = theme.get("ui.menu").patch(theme.get("ui.menu.selected"));
+        let resting_style = theme
+            .try_get("ui.cursorline.primary")
+            .filter(|style| style.bg.is_some())
+            .unwrap_or_else(|| theme.get("ui.menu"));
         let separator_style = theme.get("ui.window");
         let header_style = directory_style.add_modifier(Modifier::BOLD);
         let inactive_style = theme.get("ui.text.inactive");
@@ -1054,13 +1065,15 @@ impl Sidebar {
             for (index, row) in rows {
                 let y = area.y + 1 + (index - list.scroll) as u16;
                 let line = Rect::new(area.x, y, area.width.saturating_sub(1), 1);
-                let selected = (index == list.cursor && (self.focused || split)).then_some(
-                    if self.focused && focused {
-                        selected_style
-                    } else {
-                        theme.get("ui.text.inactive").add_modifier(Modifier::BOLD)
-                    },
-                );
+                // Without the focus the row keeps a quieter mark, so what was chosen stays
+                // in sight while it is read on the right.
+                let selected = (index == list.cursor).then_some(if self.focused && focused {
+                    selected_style
+                } else if split {
+                    theme.get("ui.text.inactive").add_modifier(Modifier::BOLD)
+                } else {
+                    resting_style
+                });
                 if let Some(selected) = selected {
                     surface.set_style(line, selected);
                 }
@@ -1176,22 +1189,36 @@ fn open_menu(row: u16, column: u16, target: PromptTarget, hidden: bool) -> Event
 /// What can be done to a changed file from the row the pointer is on; each has its key.
 fn open_changes_menu(row: u16, column: u16, root: PathBuf, file: git::ChangedFile) -> EventResult {
     EventResult::Consumed(Some(Box::new(move |compositor, _cx| {
-        let mut entries = vec![context_menu::Entry::new(
-            "Open",
-            "Enter",
-            Box::new(move |compositor, cx| {
-                let Some(view) = compositor.find::<editor::EditorView>() else {
-                    return;
-                };
-                let mut tab_cx = TabContext {
-                    editor: cx.editor,
-                    diff: &mut view.sidebar.diff,
-                };
-                if view.sidebar.changes.open(&mut tab_cx, Activation::Enter) == Outcome::Leave {
-                    view.sidebar.focus_code();
-                }
-            }),
-        )];
+        let mut entries = vec![
+            context_menu::Entry::new(
+                "Show changes",
+                "Enter",
+                Box::new(move |compositor, cx| {
+                    let Some(view) = compositor.find::<editor::EditorView>() else {
+                        return;
+                    };
+                    let mut tab_cx = TabContext {
+                        editor: cx.editor,
+                        diff: &mut view.sidebar.diff,
+                    };
+                    if view.sidebar.changes.open(&mut tab_cx, Activation::Enter) == Outcome::Leave {
+                        view.sidebar.focus_code();
+                    }
+                }),
+            ),
+            context_menu::Entry::new(
+                "Open file",
+                "o",
+                Box::new(move |compositor, cx| {
+                    let Some(view) = compositor.find::<editor::EditorView>() else {
+                        return;
+                    };
+                    if view.sidebar.changes.open_file(cx.editor) {
+                        view.sidebar.focus_code();
+                    }
+                }),
+            ),
+        ];
         for act in [Act::Stage, Act::Unstage, Act::Discard] {
             let file = file.clone();
             let root = root.clone();

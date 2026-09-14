@@ -13,11 +13,18 @@ use helix_view::{DocumentId, Editor};
 
 use super::{git, review};
 
-/// What the buffer is asked to show: a commit's patch narrowed to some paths, and the name
-/// the buffer goes by while it shows it.
+/// Where a patch comes from: a commit, or what a file changed and nobody committed yet.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum DiffSource {
+    Commit(String),
+    WorkingTree(git::ChangedFile),
+}
+
+/// What the buffer is asked to show: a patch narrowed to some paths, and the name the
+/// buffer goes by while it shows it.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct DiffTarget {
-    pub hash: String,
+    pub source: DiffSource,
     pub pathspecs: Vec<String>,
     pub name: String,
 }
@@ -59,14 +66,26 @@ impl DiffView {
         let full_context = self.full_context;
         super::background(
             move || {
-                let patch = git::show(&root, &target.hash, &target.pathspecs, full_context)?;
+                let patch = match &target.source {
+                    DiffSource::Commit(hash) => {
+                        git::show(&root, hash, &target.pathspecs, full_context)?
+                    }
+                    DiffSource::WorkingTree(file) => git::working_diff(&root, file, full_context)?,
+                };
                 let mut parsed = review::parse(&patch)?;
-                parsed.prepend_commit(&git::commit_text(&root, &target.hash)?);
+                if let DiffSource::Commit(hash) = &target.source {
+                    parsed.prepend_commit(&git::commit_text(&root, hash)?);
+                }
                 parsed.review.prepare_syntax(&loader);
                 Ok(parsed)
             },
             move |sidebar, editor, answer| sidebar.diff.landed(editor, request, anchor, answer),
         );
+    }
+
+    /// Whether the focused view shows the diff buffer.
+    pub fn is_on_screen(&self, editor: &Editor) -> bool {
+        self.doc.is_some_and(|id| view!(editor).doc == id)
     }
 
     pub fn full_context(&self) -> bool {

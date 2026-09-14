@@ -775,6 +775,12 @@ fn new_file(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> an
     Ok(())
 }
 
+/// A message in the middle of the screen with one answer: said where it cannot be missed.
+fn tell(compositor: &mut Compositor, title: &str, lines: Vec<String>) {
+    let answers = vec![ui::confirm::Answer::new("OK", Box::new(|_| {}))];
+    compositor.push(Box::new(ui::confirm::Confirm::new(title, lines, answers)));
+}
+
 fn check_updates(
     cx: &mut compositor::Context,
     _args: Args,
@@ -789,21 +795,30 @@ fn check_updates(
     tokio::spawn(async move {
         let check = tokio::task::spawn_blocking(crate::update::check).await;
         job::dispatch(move |editor, compositor| {
+            editor.clear_status();
+            let current = helix_loader::VERSION_AND_GIT_HASH;
             let check = match check {
                 Ok(Ok(check)) => check,
-                Ok(Err(err)) => return editor.set_error(format!("{err:#}")),
-                Err(err) => return editor.set_error(format!("Could not check for updates: {err}")),
+                Ok(Err(err)) => {
+                    let lines = vec![format!("{err:#}")];
+                    return tell(compositor, "Could not check for updates", lines);
+                }
+                Err(err) => {
+                    let lines = vec![err.to_string()];
+                    return tell(compositor, "Could not check for updates", lines);
+                }
             };
-            let current = helix_loader::VERSION_AND_GIT_HASH;
             if !check.newer {
-                return editor.set_status(format!(
-                    "sid is up to date: {current} (the latest release is {})",
-                    check.latest
-                ));
+                let lines = vec![
+                    format!("This is sid {current}."),
+                    format!("The latest release is {}.", check.latest),
+                ];
+                return tell(compositor, "sid is up to date", lines);
             }
             let crate::update::Install::Release { prefix } = check.install else {
-                let how = crate::update::how_to_update(&check.install).unwrap_or_default();
-                return editor.set_status(format!("sid {} is out. {how}", check.latest));
+                let mut lines = vec![format!("sid {} is out; this is {current}.", check.latest)];
+                lines.extend(crate::update::how_to_update(&check.install));
+                return tell(compositor, "Update available", lines);
             };
             let latest = check.latest;
             let lines = vec![
@@ -817,12 +832,24 @@ fn check_updates(
                         crate::update::install_latest(&prefix, true)
                     })
                     .await;
-                    job::dispatch(move |editor, _| match installed {
-                        Ok(Ok(())) => {
-                            editor.set_status(format!("Updated to {latest}: restart sid to use it"))
+                    job::dispatch(move |editor, compositor| {
+                        editor.clear_status();
+                        match installed {
+                            Ok(Ok(())) => tell(
+                                compositor,
+                                "sid is updated",
+                                vec![
+                                    format!("sid {latest} is installed."),
+                                    "Restart sid to use it.".to_string(),
+                                ],
+                            ),
+                            Ok(Err(err)) => {
+                                tell(compositor, "The update failed", vec![format!("{err:#}")])
+                            }
+                            Err(err) => {
+                                tell(compositor, "The update failed", vec![err.to_string()])
+                            }
                         }
-                        Ok(Err(err)) => editor.set_error(format!("{err:#}")),
-                        Err(err) => editor.set_error(format!("The update stopped: {err}")),
                     })
                     .await;
                 });

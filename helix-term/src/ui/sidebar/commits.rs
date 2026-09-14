@@ -9,7 +9,7 @@ use helix_view::graphics::{Modifier, Style};
 use helix_view::{Editor, Theme};
 use tui::buffer::Buffer as Surface;
 
-use super::diff_view::DiffTarget;
+use super::diff_view::{DiffSource, DiffTarget};
 use super::entries::{self, CommitRow, Folds, Row, RowPaint};
 use super::git::{self, ChangedFile, Commit, LOG_PAGE};
 use super::list::List;
@@ -429,7 +429,7 @@ impl CommitsTab {
                 None => (vec![".".to_string()], commit.short.clone()),
             };
             return Some(DiffTarget {
-                hash: commit.hash.clone(),
+                source: DiffSource::Commit(commit.hash.clone()),
                 pathspecs,
                 name,
             });
@@ -460,7 +460,7 @@ impl CommitsTab {
             }
         }
         Some(DiffTarget {
-            hash: opened.commit.hash.clone(),
+            source: DiffSource::Commit(opened.commit.hash.clone()),
             pathspecs,
             name,
         })
@@ -796,7 +796,10 @@ mod tests {
         tab.focus_files(true);
         assert_eq!(tab.rows().len(), 1);
         assert_eq!(tab.list().cursor, 0);
-        assert_eq!(tab.diff_target().unwrap().hash, "abc123");
+        assert_eq!(
+            tab.diff_target().unwrap().source,
+            DiffSource::Commit("abc123".into())
+        );
         tab.focus_files(false);
         assert_eq!(tab.rows().len(), 2);
         assert_eq!(tab.list().cursor, 1);
@@ -804,7 +807,10 @@ mod tests {
         assert_eq!(tab.panes()[1].0.len(), 1);
         assert!(tab.diff_target().is_none());
         tab.follow = true;
-        assert_eq!(tab.diff_target().unwrap().hash, "abc123");
+        assert_eq!(
+            tab.diff_target().unwrap().source,
+            DiffSource::Commit("abc123".into())
+        );
         tab.set_showing(Showing::Repository);
         assert!(!tab.has_files());
         assert!(!tab.files_focused);
