@@ -26,6 +26,9 @@ fn main() {
     } else {
         format!("{MAJOR}.{minor}.{PATCH}")
     };
+    // sid's releases are tags like v2026.9.17: name the build after the release
+    // it is, or the one it follows ("v2026.9.17+2" is two commits past it).
+    let calver = sid_release().unwrap_or(calver);
     let version: Cow<_> = match &git_hash {
         Some(git_hash) => format!("{} ({})", calver, &git_hash[..8]).into(),
         None => calver.into(),
@@ -79,4 +82,33 @@ fn main() {
     if head_ref.exists() {
         println!("cargo:rerun-if-changed={}", head_ref.display());
     }
+    // A branch may live only in packed-refs, and a new tag renames the build;
+    // the HEAD log moves on every commit, checkout and reset.
+    for watched in ["packed-refs", "refs/tags", "logs/HEAD"] {
+        let path = Path::new(&git_dir).join(watched);
+        if path.exists() {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
+}
+
+fn sid_release() -> Option<String> {
+    println!("cargo:rerun-if-env-changed=GITHUB_REF_TYPE");
+    println!("cargo:rerun-if-env-changed=GITHUB_REF_NAME");
+    // A release build checks out the tag shallowly, where describe may not see it.
+    if std::env::var("GITHUB_REF_TYPE").as_deref() == Ok("tag") {
+        return std::env::var("GITHUB_REF_NAME").ok();
+    }
+    let describe = Command::new("git")
+        .args(["describe", "--tags", "--match", "v[0-9]*"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|x| String::from_utf8(x.stdout).ok())?;
+    let describe = describe.trim();
+    // "v2026.9.17-2-g3c25a543" → "v2026.9.17+2"
+    Some(match describe.rsplitn(3, '-').collect::<Vec<_>>()[..] {
+        [_hash, ahead, tag] if ahead.parse::<u32>().is_ok() => format!("{tag}+{ahead}"),
+        _ => describe.to_string(),
+    })
 }

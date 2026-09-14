@@ -243,6 +243,13 @@ impl Component for Shortcuts {
         let title = theme.get("ui.text").add_modifier(Modifier::BOLD);
         let dim = theme.get("ui.text.inactive");
         surface.set_stringn(x, area.y, "Keyboard shortcuts", width, title);
+        // The build, so a report can say exactly which sid it came from.
+        let version = format!("sid {}", helix_loader::VERSION_AND_GIT_HASH);
+        let version_width = version.chars().count();
+        if version_width + "Keyboard shortcuts".len() + 2 <= width {
+            let version_x = x + (width - version_width) as u16;
+            surface.set_stringn(version_x, area.y, &version, version_width, dim);
+        }
         self.tabs.clear();
         let mut at = x;
         for (index, scope) in SCOPES.iter().enumerate() {
