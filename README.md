@@ -339,7 +339,12 @@ these defaults: write only what you want different.
 
 Copying over SSH reaches your own machine's clipboard when the terminal
 supports OSC 52: Ghostty, kitty and WezTerm do, iTerm2 once it is allowed in
-its settings.
+its settings; Terminal.app does not. No program reached over SSH can read your
+clipboard back, so paste what you copied elsewhere with the terminal's own
+paste key (`Cmd-v`, or `Ctrl-Shift-v`); `Ctrl-v` in sid pastes what you copied
+in sid, and says so instead of pasting something older when you may have
+copied since. A terminal without 24-bit colour, Terminal.app again, gets the
+theme brought down to its 256 colours.
 
 ## Settings on the screen
 

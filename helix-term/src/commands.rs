@@ -6445,6 +6445,9 @@ fn save_as(_cx: &mut Context) {
 /// keeps what was copied here for the terminals that let a program write the clipboard but
 /// never read it back.
 fn paste_from_clipboard(cx: &mut Context) {
+    if clipboard_unknown(cx.editor) {
+        return;
+    }
     let count = cx.count();
 
     if nothing_selected(cx.editor) {
@@ -6454,6 +6457,17 @@ fn paste_from_clipboard(cx: &mut Context) {
 
     replace_selections_with_register(cx.editor, '+', count);
     exit_select_mode(cx);
+}
+
+/// Over SSH the system clipboard is the other machine's, which no program here can read:
+/// what was copied here is pasted only while nothing else can have been copied since, and
+/// otherwise the terminal's own paste is asked for, which reads the right one.
+fn clipboard_unknown(editor: &mut Editor) -> bool {
+    if !editor.registers.clipboard_unknown() {
+        return false;
+    }
+    editor.set_status("Paste with the terminal's paste key (Cmd+V, or Ctrl+Shift+V): sid cannot read this clipboard");
+    true
 }
 
 fn yank_to_primary_clipboard(cx: &mut Context) {
@@ -6659,11 +6673,17 @@ pub(crate) fn paste_bracketed_value(cx: &mut Context, contents: String) {
 }
 
 fn paste_clipboard_after(cx: &mut Context) {
+    if clipboard_unknown(cx.editor) {
+        return;
+    }
     paste(cx.editor, '+', Paste::After, cx.count());
     exit_select_mode(cx);
 }
 
 fn paste_clipboard_before(cx: &mut Context) {
+    if clipboard_unknown(cx.editor) {
+        return;
+    }
     paste(cx.editor, '+', Paste::Before, cx.count());
     exit_select_mode(cx);
 }
@@ -6732,6 +6752,9 @@ pub(crate) fn replace_selections_with_register(editor: &mut Editor, register: ch
 }
 
 fn replace_selections_with_clipboard(cx: &mut Context) {
+    if clipboard_unknown(cx.editor) {
+        return;
+    }
     replace_selections_with_register(cx.editor, '+', cx.count());
     exit_select_mode(cx);
 }

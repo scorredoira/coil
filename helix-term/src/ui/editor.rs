@@ -2051,6 +2051,7 @@ impl Component for EditorView {
 
         match event {
             Event::Paste(contents) => {
+                cx.editor.registers.clipboard_pasted(contents);
                 self.handle_non_key_input(&mut cx);
                 cx.count = cx.editor.count;
                 commands::paste_bracketed_value(&mut cx, contents.clone());
@@ -2229,6 +2230,7 @@ impl Component for EditorView {
                 EventResult::Consumed(None)
             }
             Event::FocusLost => {
+                context.editor.registers.terminal_left();
                 if context.editor.config().auto_save.focus_lost {
                     let options = commands::WriteAllOptions {
                         force: false,

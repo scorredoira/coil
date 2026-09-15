@@ -262,7 +262,35 @@ mod external {
             }
         }
 
+        /// Whether the clipboard can be read back: a terminal can be written to but not asked.
+        pub fn can_read(&self) -> bool {
+            match self {
+                #[cfg(feature = "term")]
+                Self::Termcode => false,
+                Self::None => false,
+                _ => true,
+            }
+        }
+
+        /// Writes the clipboard. The terminal is told as well, with OSC 52, since the
+        /// clipboard a command reaches is the one of the machine sid runs on, not the one
+        /// of the person typing over SSH; a terminal that does not take OSC 52 ignores it.
         pub fn set_contents(&self, content: &str, clipboard_type: ClipboardType) -> Result<()> {
+            #[cfg(feature = "term")]
+            {
+                let through_terminal = matches!(self, Self::Termcode | Self::Tmux | Self::None);
+                if !through_terminal && matches!(clipboard_type, ClipboardType::Clipboard) {
+                    Self::Termcode.set_contents(content, clipboard_type)?;
+                    if let Err(err) = self.set_native_contents(content, clipboard_type) {
+                        log::warn!("Failed to write the clipboard with {}: {err}", self.name());
+                    }
+                    return Ok(());
+                }
+            }
+            self.set_native_contents(content, clipboard_type)
+        }
+
+        fn set_native_contents(&self, content: &str, clipboard_type: ClipboardType) -> Result<()> {
             fn paste_to_builtin(
                 provider: CommandProvider,
                 content: &str,

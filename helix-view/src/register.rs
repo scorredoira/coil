@@ -29,6 +29,9 @@ pub struct Registers {
     inner: HashMap<char, Vec<String>>,
     clipboard_provider: Box<dyn DynAccess<ClipboardProvider>>,
     pub last_search_register: char,
+    /// Whether the terminal lost focus since the last copy to the system clipboard: another
+    /// program may have copied since, which a clipboard that cannot be read does not show.
+    left_since_copy: bool,
 }
 
 impl Registers {
@@ -37,7 +40,31 @@ impl Registers {
             inner: Default::default(),
             clipboard_provider,
             last_search_register: '/',
+            left_since_copy: false,
         }
+    }
+
+    /// The terminal lost focus: what was copied here may no longer be the clipboard's.
+    pub fn terminal_left(&mut self) {
+        self.left_since_copy = true;
+    }
+
+    /// The terminal pasted `contents`, which is what the system clipboard holds, so pasting
+    /// it again here pastes the same even when the clipboard cannot be read.
+    pub fn clipboard_pasted(&mut self, contents: &str) {
+        if self.clipboard_provider.load().can_read() {
+            return;
+        }
+        self.inner.insert('+', vec![contents.to_string()]);
+        self.left_since_copy = false;
+    }
+
+    /// Whether pasting the system clipboard here could paste something older than what it
+    /// holds: it cannot be read (a session over SSH), and either nothing was copied here or
+    /// the terminal lost focus since, when something else may have been copied.
+    pub fn clipboard_unknown(&self) -> bool {
+        !self.clipboard_provider.load().can_read()
+            && (self.left_since_copy || !self.inner.contains_key(&'+'))
     }
 
     pub fn read<'a>(&'a self, name: char, editor: &'a Editor) -> Option<RegisterValues<'a>> {
@@ -90,6 +117,9 @@ impl Registers {
                         _ => unreachable!(),
                     },
                 )?;
+                if name == '+' {
+                    self.left_since_copy = false;
+                }
                 values.reverse();
                 self.inner.insert(name, values);
                 Ok(())
