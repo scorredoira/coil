@@ -6456,6 +6456,15 @@ fn paste_from_clipboard(cx: &mut Context) {
     }
 
     replace_selections_with_register(cx.editor, '+', count);
+    // The caret lands after what was pasted, as in any other editor: left selected, pasting
+    // what was just copied over itself would show no change, and pasting again none either.
+    let (view, doc) = current!(cx.editor);
+    let pasted = doc
+        .selection(view.id)
+        .clone()
+        .transform(|range| Range::point(range.to()));
+    doc.set_selection(view.id, pasted);
+    view.insert_selection = false;
     exit_select_mode(cx);
 }
 
