@@ -146,6 +146,13 @@ pub type Answer<T> = Result<T, String>;
 /// What git's answer reads as outside a repository: a fact about the folder, not a failure.
 pub const NOT_A_REPOSITORY: &str = "not a git repository";
 
+/// Whether `root` is inside a git repository: it or a folder above holds `.git`, a
+/// directory or, in a worktree or submodule, a file. Looked up on disk, not asked of git,
+/// so it is cheap enough to ask whenever the tabs are drawn anew.
+pub fn inside_repository(root: &Path) -> bool {
+    root.ancestors().any(|dir| dir.join(".git").exists())
+}
+
 /// A pathspec naming one path from the repository's top, taken literally.
 pub fn pathspec(top_relative: &str) -> String {
     format!(":(top,literal){top_relative}")

@@ -75,15 +75,16 @@ impl TabKind {
     /// The tabs in the order of the strip, which Tab walks.
     const ALL: [TabKind; 3] = [TabKind::Files, TabKind::Changes, TabKind::Commits];
 
-    fn next(self) -> TabKind {
-        let index = TabKind::ALL.iter().position(|kind| *kind == self);
-        let next = index.map_or(0, |index| (index + 1) % TabKind::ALL.len());
-        TabKind::ALL[next]
+    /// Whether the tab reads git, and has nothing to show outside a repository.
+    fn needs_git(self) -> bool {
+        self != TabKind::Files
     }
 }
 
 pub struct Sidebar {
     root: PathBuf,
+    /// Whether the workspace is in a git repository; outside one only Files is offered.
+    in_git: bool,
     tab: TabKind,
     files: FilesTab,
     changes: ChangesTab,
@@ -174,6 +175,7 @@ impl Sidebar {
             changes: ChangesTab::new(root.clone()),
             commits: CommitsTab::new(root.clone()),
             diff: DiffView::new(root.clone()),
+            in_git: git::inside_repository(&root),
             root,
             tab: TabKind::Files,
             open,
@@ -235,7 +237,39 @@ impl Sidebar {
         self.focused = false;
     }
 
+    /// The tabs offered: Changes and Commits only inside a git repository.
+    fn tabs(&self) -> impl Iterator<Item = TabKind> + '_ {
+        TabKind::ALL
+            .into_iter()
+            .filter(|kind| self.in_git || !kind.needs_git())
+    }
+
+    /// Looks again whether the workspace is in a repository, one made or removed since, and
+    /// leaves a git tab that no longer has one for Files.
+    fn check_git(&mut self) {
+        self.in_git = git::inside_repository(&self.root);
+        if !self.in_git && self.tab.needs_git() {
+            self.tab = TabKind::Files;
+            self.code_hidden = false;
+        }
+    }
+
+    /// Whether a git tab can be shown; outside a repository says so instead.
+    fn git_available(&mut self, editor: &mut Editor) -> bool {
+        self.check_git();
+        if !self.in_git {
+            editor.set_status(format!(
+                "{} is not in a git repository",
+                self.root.display()
+            ));
+        }
+        self.in_git
+    }
+
     pub fn toggle_commits(&mut self, editor: &mut Editor) {
+        if !self.showing(TabKind::Commits) && !self.git_available(editor) {
+            return;
+        }
         if self.showing(TabKind::Commits) {
             self.open = false;
             self.focus_code();
@@ -253,6 +287,9 @@ impl Sidebar {
     }
 
     pub fn toggle_commit_files(&mut self, editor: &mut Editor) {
+        if !self.git_available(editor) {
+            return;
+        }
         if !self.showing(TabKind::Commits) {
             self.toggle_commits(editor);
         }
@@ -265,6 +302,9 @@ impl Sidebar {
 
     pub fn toggle_code(&mut self, editor: &mut Editor) {
         let hide = !self.code_hidden();
+        if hide && !self.git_available(editor) {
+            return;
+        }
         if hide && !self.showing(TabKind::Commits) {
             self.toggle_commits(editor);
         }
@@ -319,6 +359,9 @@ impl Sidebar {
     pub fn show_history(&mut self, editor: &mut Editor, path: PathBuf) {
         if !path.starts_with(&self.root) {
             editor.set_error(format!("{} is outside the workspace", path.display()));
+            return;
+        }
+        if !self.git_available(editor) {
             return;
         }
         self.open = true;
@@ -388,6 +431,7 @@ impl Sidebar {
             });
         }
         self.built = true;
+        self.check_git();
         let (tab, diff) = self.parts();
         tab.rebuild(editor);
         let mut cx = TabContext { editor, diff };
@@ -633,12 +677,21 @@ impl Sidebar {
                 self.collapse_or_parent(editor);
             }
             (KeyCode::F(5), KeyModifiers::NONE) => {
+                if self.tab.needs_git() {
+                    self.check_git();
+                }
                 let (tab, diff) = self.parts();
                 let mut tab_cx = TabContext { editor, diff };
                 tab.refresh(&mut tab_cx);
             }
             (KeyCode::Tab, _) => {
-                self.switch_tab(self.tab.next(), editor);
+                self.check_git();
+                let tabs: Vec<TabKind> = self.tabs().collect();
+                let index = tabs.iter().position(|kind| *kind == self.tab);
+                let next = tabs[index.map_or(0, |index| (index + 1) % tabs.len())];
+                if next != self.tab {
+                    self.switch_tab(next, editor);
+                }
             }
             (KeyCode::Char('n'), KeyModifiers::CONTROL) if self.active().edits_disk() => {
                 let target = self.prompt_target();
@@ -1027,7 +1080,11 @@ impl Sidebar {
                 self.commits.label(),
             ];
             let mut x = area.x + 1;
+            self.tab_columns = [(0, 0); TabKind::ALL.len()];
             for (index, (kind, label)) in TabKind::ALL.iter().zip(labels).enumerate() {
+                if kind.needs_git() && !self.in_git {
+                    continue;
+                }
                 let style = if *kind == self.tab {
                     header_style
                 } else {
