@@ -146,7 +146,10 @@ screen, and it stays where you scrolled it.
 The **Commits** tab lists the history. A click on a commit shows its whole
 diff in the editor; `Enter` or a double click lists the files it touched, the
 diff then following whatever the cursor is on: a directory, one file. `Esc`
-goes back. History sits above the changed files in one column; drag the divider
+goes back. `Ctrl-f` opens a filter on the top row: the history narrows to the
+commits whose hash starts with what you type (`45f740db8`) or whose subject or
+author contains it, looking through the whole history, not only what is on
+screen — `Esc` brings it all back. History sits above the changed files in one column; drag the divider
 to resize either pane, or its outer edge to adjust the column width.
 
 Diffs show filenames and highlighted code with old/new line numbers. `F4` toggles

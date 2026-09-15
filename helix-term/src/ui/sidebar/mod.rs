@@ -548,7 +548,10 @@ impl Sidebar {
 
     pub fn handle_key(&mut self, key: KeyEvent, cx: &mut commands::Context) -> EventResult {
         let editor = &mut cx.editor;
-        if self.tab == TabKind::Files {
+        // Inside a commit's files the keys are the files' own; the filter is the history's.
+        let filters = self.tab == TabKind::Files
+            || self.tab == TabKind::Commits && !self.commits.files_focused();
+        if filters {
             if let Some(result) = self.handle_filter_key(key, editor) {
                 return result;
             }
@@ -668,35 +671,52 @@ impl Sidebar {
         EventResult::Consumed(None)
     }
 
-    /// The filter box of the Files tab: Ctrl-f opens it, what is typed narrows the rows,
-    /// Backspace takes a letter back, and Esc clears it and brings the whole tree back.
-    /// Answers only for the keys the box takes.
+    /// The filter box of the Files and Commits tabs: Ctrl-f opens it, what is typed narrows
+    /// the rows, Backspace takes a letter back, and Esc clears it and brings the whole tree
+    /// or history back. Answers only for the keys the box takes.
     fn handle_filter_key(&mut self, key: KeyEvent, editor: &mut Editor) -> Option<EventResult> {
-        let open = self.files.filter().is_some();
-        match (key.code, key.modifiers, open) {
-            (KeyCode::Char('f'), KeyModifiers::CONTROL, false) => {
-                self.files.set_filter(editor, Some(String::new()));
+        let text = self.filter().map(str::to_string);
+        match (key.code, key.modifiers, text) {
+            (KeyCode::Char('f'), KeyModifiers::CONTROL, None) => {
+                self.set_filter(editor, Some(String::new()));
             }
-            (KeyCode::Char('f'), KeyModifiers::CONTROL, true) => {}
-            (KeyCode::Esc, _, true) => {
-                self.files.set_filter(editor, None);
+            (KeyCode::Char('f'), KeyModifiers::CONTROL, Some(_)) => {}
+            (KeyCode::Esc, _, Some(_)) => {
+                self.set_filter(editor, None);
                 // The folds are back as they were, so the file opened from a match is
                 // revealed again at the next render.
-                self.revealed = None;
+                if self.tab == TabKind::Files {
+                    self.revealed = None;
+                }
             }
-            (KeyCode::Backspace, _, true) => {
-                let mut text = self.files.filter().unwrap_or_default().to_string();
+            (KeyCode::Backspace, _, Some(mut text)) => {
                 text.pop();
-                self.files.set_filter(editor, Some(text));
+                self.set_filter(editor, Some(text));
             }
-            (KeyCode::Char(char), KeyModifiers::NONE | KeyModifiers::SHIFT, true) => {
-                let mut text = self.files.filter().unwrap_or_default().to_string();
+            (KeyCode::Char(char), KeyModifiers::NONE | KeyModifiers::SHIFT, Some(mut text)) => {
                 text.push(char);
-                self.files.set_filter(editor, Some(text));
+                self.set_filter(editor, Some(text));
             }
             _ => return None,
         }
         Some(EventResult::Consumed(None))
+    }
+
+    /// The active tab's filter box, when it has one and it is open.
+    fn filter(&self) -> Option<&str> {
+        match self.tab {
+            TabKind::Files => self.files.filter(),
+            TabKind::Commits => self.commits.filter(),
+            TabKind::Changes => None,
+        }
+    }
+
+    fn set_filter(&mut self, editor: &mut Editor, text: Option<String>) {
+        match self.tab {
+            TabKind::Files => self.files.set_filter(editor, text),
+            TabKind::Commits => self.commits.set_filter(editor, text),
+            TabKind::Changes => {}
+        }
     }
 
     /// What the Changes tab does to the file under the cursor: `s` stages it, `u` takes it
@@ -989,15 +1009,14 @@ impl Sidebar {
             surface.set_string(area.right() - 1, y, "│", separator_style);
         }
 
-        let filter = self.files.filter().filter(|_| self.tab == TabKind::Files);
-        if let Some(filter) = filter {
+        if let Some(filter) = self.filter().map(str::to_string) {
             // The box takes the strip's row; a click there is not a tab's while it is open.
             self.tab_columns = [(0, 0); TabKind::ALL.len()];
             let x = area.x + 1;
             let room = (area.right() - 1).saturating_sub(x) as usize;
             let (end, _) = surface.set_stringn(x, area.y, "Filter: ", room, inactive_style);
             let room = (area.right() - 1).saturating_sub(end) as usize;
-            let (end, _) = surface.set_stringn(end, area.y, filter, room, theme.get("ui.text"));
+            let (end, _) = surface.set_stringn(end, area.y, &filter, room, theme.get("ui.text"));
             if (end as usize) < area.right() as usize - 1 {
                 surface.set_string(end, area.y, "▏", header_style);
             }

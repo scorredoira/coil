@@ -188,6 +188,11 @@ impl Shortcuts {
             ),
             (
                 "Commits",
+                "Ctrl+f",
+                "Filter commits by hash, subject or author; Esc clears the filter",
+            ),
+            (
+                "Commits",
                 "Alt+↑ / Alt+↓",
                 "Focus commit history / commit files",
             ),

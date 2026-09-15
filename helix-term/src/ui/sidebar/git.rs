@@ -175,6 +175,24 @@ pub fn log(root: &Path, skip: usize) -> Answer<Vec<Commit>> {
     parse_log(&log)
 }
 
+/// How many commits the filter of the history looks through, newest first.
+pub const WHOLE_LOG_CAP: usize = 100_000;
+
+/// The history from HEAD, up to `WHOLE_LOG_CAP` commits, for the filter to look through.
+pub fn whole_log(root: &Path) -> Answer<Vec<Commit>> {
+    let count = format!("--max-count={WHOLE_LOG_CAP}");
+    let log = run(root, &[LOG, "-z", "--abbrev=7", LOG_FORMAT, &count])?;
+    parse_log(&log)
+}
+
+/// Whether `commit` is one the filter `lowercase` names: its hash starts with it, or its
+/// subject or author contains it, case aside.
+pub fn commit_matches(commit: &Commit, lowercase: &str) -> bool {
+    commit.hash.starts_with(lowercase)
+        || commit.subject.to_lowercase().contains(lowercase)
+        || commit.author.to_lowercase().contains(lowercase)
+}
+
 /// The whole history of one file below `root`, followed across renames, each commit
 /// carrying the name the file had in it. Read whole: `--follow` miscounts `--skip`.
 pub fn file_log(root: &Path, path: &Path) -> Answer<Vec<Commit>> {
@@ -869,6 +887,17 @@ mod tests {
         assert_eq!(commits[0].subject, "first: subject");
         assert_eq!(commits[0].file, None);
         assert_eq!(commits[1].subject, "second");
+    }
+
+    #[test]
+    fn a_filter_names_a_commit_by_hash_subject_or_author() {
+        let log = b"45f740db8abc\x1f45f740d\x1f10\x1f+0000\x1fAda Lovelace\x1fFix the Parser\0";
+        let commit = &parse_log(log).unwrap()[0];
+        assert!(commit_matches(commit, "45f740db8"));
+        assert!(commit_matches(commit, "parser"));
+        assert!(commit_matches(commit, "lovelace"));
+        assert!(!commit_matches(commit, "740db8"));
+        assert!(!commit_matches(commit, "turing"));
     }
 
     #[test]

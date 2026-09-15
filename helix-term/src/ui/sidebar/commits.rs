@@ -54,6 +54,13 @@ pub struct CommitsTab {
     opened: Option<OpenCommit>,
     /// The hash whose files are being asked for.
     opening: Option<String>,
+    /// What the history is narrowed to while the filter box is open.
+    filter: Option<String>,
+    /// The whole history, read when the box opened, for the filter to look through; until
+    /// it lands the filter looks through the pages read so far. A file's history is whole.
+    whole: Option<Vec<Commit>>,
+    /// The commits the filter keeps, which the history rows then list.
+    filtered: Option<Vec<Commit>>,
     /// Whether the diff follows the cursor over the history: from the first move or click
     /// in it, so arriving at the tab does not take the editor's view away.
     follow: bool,
@@ -106,6 +113,9 @@ impl CommitsTab {
             moves: 0,
             opened: None,
             opening: None,
+            filter: None,
+            whole: None,
+            filtered: None,
             follow: false,
         }
     }
@@ -123,12 +133,7 @@ impl CommitsTab {
         self.files_focused = false;
         self.follow = true;
         if self.files_visible {
-            let commit = self
-                .log
-                .as_ref()
-                .and_then(|log| log.as_ref().ok())
-                .and_then(|commits| commits.get(self.history_list.cursor))
-                .cloned();
+            let commit = self.listed().get(self.history_list.cursor).cloned();
             if let Some(commit) = commit {
                 self.open_commit(commit);
             } else {
@@ -136,6 +141,87 @@ impl CommitsTab {
             }
         }
         self.preview(cx);
+    }
+
+    pub fn files_focused(&self) -> bool {
+        self.files_focused
+    }
+
+    pub fn filter(&self) -> Option<&str> {
+        self.filter.as_deref()
+    }
+
+    /// Opens the filter box, or narrows the history to the commits `text` names while it
+    /// is open, the cursor on the first; `None` closes it and the whole history comes back,
+    /// the cursor on the commit it was on when the pages read so far hold it.
+    pub fn set_filter(&mut self, editor: &mut Editor, text: Option<String>) {
+        let under_cursor = self
+            .listed()
+            .get(self.history_list.cursor)
+            .map(|commit| commit.hash.clone());
+        if text.is_some() && self.filter.is_none() {
+            self.read_whole();
+        }
+        let closing = text.is_none();
+        if closing {
+            self.whole = None;
+        }
+        self.filter = text;
+        self.rebuild(editor);
+        let found = under_cursor
+            .filter(|_| closing)
+            .and_then(|hash| self.listed().iter().position(|commit| commit.hash == hash));
+        match found {
+            Some(index) => {
+                self.history_list.select(index);
+                self.history_list.center();
+            }
+            None => self.history_list.home(),
+        }
+        self.ask_next_page_if_near_end();
+        self.preview_when_rested();
+    }
+
+    /// Reads the whole history for the filter box, off the main thread; a file's history
+    /// is read whole already.
+    fn read_whole(&mut self) {
+        if self.showing != Showing::Repository {
+            return;
+        }
+        let root = self.root.clone();
+        let epoch = self.epoch;
+        super::background(
+            move || git::whole_log(&root),
+            move |sidebar, editor, answer| {
+                let commits = &mut sidebar.commits;
+                if commits.epoch != epoch || commits.filter.is_none() {
+                    return;
+                }
+                match answer {
+                    Ok(whole) => {
+                        if whole.len() >= git::WHOLE_LOG_CAP {
+                            editor.set_status(format!(
+                                "the filter looks through the last {} commits only",
+                                git::WHOLE_LOG_CAP
+                            ));
+                        }
+                        commits.whole = Some(whole);
+                    }
+                    Err(err) => editor.set_error(err),
+                }
+                commits.rebuild(editor);
+                commits.preview_when_rested();
+            },
+        );
+    }
+
+    /// The commits the history rows list: the ones the filter keeps while it is open.
+    fn listed(&self) -> &[Commit] {
+        match (&self.filtered, &self.log) {
+            (Some(filtered), _) => filtered,
+            (None, Some(Ok(commits))) => commits,
+            _ => &[],
+        }
     }
 
     pub fn focus_files(&mut self, files: bool) {
@@ -187,6 +273,8 @@ impl CommitsTab {
         self.asking = None;
         self.opened = None;
         self.opening = None;
+        self.filter = None;
+        self.whole = None;
         self.files_focused = false;
         self.follow = false;
         self.history_list.home();
@@ -291,7 +379,8 @@ impl CommitsTab {
             .map(|commit| commit.hash.clone());
         let found =
             under_cursor.and_then(|hash| commits.iter().position(|commit| commit.hash == hash));
-        if let Some(index) = found {
+        // While the filter is open the cursor stands in the commits it keeps.
+        if let Some(index) = found.filter(|_| self.filter.is_none()) {
             self.history_list.select(index);
         }
         self.log = Some(Ok(commits));
@@ -303,6 +392,9 @@ impl CommitsTab {
         let Some(Ok(commits)) = &self.log else {
             return;
         };
+        if self.filter.is_some() {
+            return;
+        }
         if !self.complete && self.history_list.near_end() {
             self.ask_page(commits.len());
         }
@@ -361,12 +453,10 @@ impl CommitsTab {
         self.opening = None;
         self.rebuild(cx.editor);
         // The history may have been read again meanwhile, so the commit is found by its hash.
-        let index = match &self.log {
-            Some(Ok(commits)) => commits
-                .iter()
-                .position(|commit| commit.hash == opened.commit.hash),
-            _ => None,
-        };
+        let index = self
+            .listed()
+            .iter()
+            .position(|commit| commit.hash == opened.commit.hash);
         self.history_list.scroll = opened.list_scroll;
         self.history_list
             .select(index.unwrap_or(opened.list_cursor));
@@ -413,10 +503,7 @@ impl CommitsTab {
             if !self.follow {
                 return None;
             }
-            let Some(Ok(commits)) = &self.log else {
-                return None;
-            };
-            let commit = commits.get(row.index)?;
+            let commit = self.listed().get(row.index)?;
             let (pathspecs, name) = match &commit.file {
                 Some(file) => {
                     let mut pathspecs = vec![git::pathspec(file)];
@@ -513,6 +600,7 @@ impl TabView for CommitsTab {
     fn empty_message(&self) -> Option<Message> {
         let (text, is_error) = match &self.log {
             None => ("reading git log…".to_string(), false),
+            Some(Ok(_)) if self.filtered.is_some() => ("no commit matches".to_string(), false),
             Some(Ok(_)) => ("no commits".to_string(), false),
             Some(Err(err)) => (err.clone(), err != git::NOT_A_REPOSITORY),
         };
@@ -535,13 +623,27 @@ impl TabView for CommitsTab {
             )));
             entries::list_changed(&self.root, &opened.files, &opened.folds, &mut rows);
         }
-        let mut history_rows = Vec::new();
-        if let Some(Ok(commits)) = &self.log {
-            let author_width = author_width(commits);
-            for (index, commit) in commits.iter().enumerate() {
-                history_rows.push(Row::Commit(commit_row(index, commit, author_width, false)));
-            }
-        }
+        let filter = self.filter.as_deref().filter(|text| !text.is_empty());
+        self.filtered = filter.map(|filter| {
+            let filter = filter.to_lowercase();
+            let source = match (&self.whole, &self.log) {
+                (Some(whole), _) => whole.as_slice(),
+                (None, Some(Ok(commits))) => commits.as_slice(),
+                _ => &[],
+            };
+            source
+                .iter()
+                .filter(|commit| git::commit_matches(commit, &filter))
+                .cloned()
+                .collect()
+        });
+        let commits = self.listed();
+        let author_width = author_width(commits);
+        let history_rows = commits
+            .iter()
+            .enumerate()
+            .map(|(index, commit)| Row::Commit(commit_row(index, commit, author_width, false)))
+            .collect();
         self.history_rows = history_rows;
         self.history_list.set_len(self.history_rows.len());
         self.rows = rows;
@@ -556,9 +658,12 @@ impl TabView for CommitsTab {
         }
     }
 
-    /// F5 reads the top of the history again; one that comes while a page is being read
+    /// F5 reads the top of the history again, and the whole of it for an open filter; one that comes while a page is being read
     /// is kept for when it lands, never dropped.
     fn refresh(&mut self, _cx: &mut TabContext) {
+        if self.filter.is_some() {
+            self.read_whole();
+        }
         if self.asking.is_some() {
             self.again = true;
             return;
@@ -596,11 +701,7 @@ impl TabView for CommitsTab {
         let in_history = !self.files_focused;
         match (row, how) {
             (Row::Commit(row), _) if in_history => {
-                let commit = match &self.log {
-                    Some(Ok(commits)) => commits.get(row.index).cloned(),
-                    _ => None,
-                };
-                if let Some(commit) = commit {
+                if let Some(commit) = self.listed().get(row.index).cloned() {
                     self.open_commit(commit);
                 }
                 Outcome::Stay
