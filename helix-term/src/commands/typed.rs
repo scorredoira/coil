@@ -781,8 +781,11 @@ fn tell(compositor: &mut Compositor, title: &str, lines: Vec<String>) {
     compositor.push(Box::new(ui::confirm::Confirm::new(title, lines, answers)));
 }
 
+/// The dialog that turns while updates are looked for or installed.
+const UPDATE_BUSY: &str = "update-busy";
+
 fn check_updates(
-    cx: &mut compositor::Context,
+    _cx: &mut compositor::Context,
     _args: Args,
     event: PromptEvent,
 ) -> anyhow::Result<()> {
@@ -790,12 +793,17 @@ fn check_updates(
         return Ok(());
     }
 
-    cx.editor.set_status("Checking for updates…");
     // Off the main thread: the answer comes from GitHub, and the editor goes on meanwhile.
     tokio::spawn(async move {
+        // Up through the same queue as the answer, so the answer always comes after it.
+        job::dispatch(|_, compositor| {
+            let busy = ui::busy::Busy::new(UPDATE_BUSY, "Checking for updates…");
+            compositor.push(Box::new(busy));
+        })
+        .await;
         let check = tokio::task::spawn_blocking(crate::update::check).await;
-        job::dispatch(move |editor, compositor| {
-            editor.clear_status();
+        job::dispatch(move |_editor, compositor| {
+            compositor.remove(UPDATE_BUSY);
             let current = helix_loader::VERSION_AND_GIT_HASH;
             let check = match check {
                 Ok(Ok(check)) => check,
@@ -825,15 +833,19 @@ fn check_updates(
                 format!("sid {latest} is out; this is {current}."),
                 "It installs beside this one, and the next start is the new one.".to_string(),
             ];
-            let install: ui::confirm::Choice = Box::new(move |cx| {
-                cx.editor.set_status(format!("Installing sid {latest}…"));
+            let install: ui::confirm::Choice = Box::new(move |_cx| {
                 tokio::spawn(async move {
+                    let title = format!("Installing sid {latest}…");
+                    job::dispatch(move |_, compositor| {
+                        compositor.push(Box::new(ui::busy::Busy::new(UPDATE_BUSY, title)));
+                    })
+                    .await;
                     let installed = tokio::task::spawn_blocking(move || {
                         crate::update::install_latest(&prefix, true)
                     })
                     .await;
-                    job::dispatch(move |editor, compositor| {
-                        editor.clear_status();
+                    job::dispatch(move |_editor, compositor| {
+                        compositor.remove(UPDATE_BUSY);
                         match installed {
                             Ok(Ok(())) => tell(
                                 compositor,
