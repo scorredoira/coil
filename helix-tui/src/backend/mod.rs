@@ -53,6 +53,9 @@ pub trait Backend {
     /// Flushes the terminal buffer
     fn flush(&mut self) -> Result<(), io::Error>;
     fn supports_true_color(&self) -> bool;
+    /// Whether to draw colours as given or brought down to the 256 of the palette, which
+    /// every terminal draws: one that does not take 24-bit colours paints them as others.
+    fn set_true_color(&mut self, _true_color: bool) {}
     /// Whether the terminal reports keys in full: Cmd, and Ctrl-Shift with a letter told
     /// apart from Ctrl with it. Terminals on the classic encoding send neither.
     fn keyboard_enhanced(&self) -> bool {

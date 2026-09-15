@@ -542,6 +542,9 @@ impl Application {
         let true_color = terminal.backend().supports_true_color()
             || config.editor.true_color
             || crate::true_color();
+        // Any theme draws: without 24-bit colours the backend brings its colours down to
+        // the 256 of the palette.
+        terminal.backend_mut().set_true_color(true_color);
         let theme = config
             .theme
             .as_ref()
@@ -555,17 +558,6 @@ impl Application {
                         e
                     })
                     .ok()
-                    .filter(|theme| {
-                        let colors_ok = true_color || theme.is_16_color();
-                        if !colors_ok {
-                            log::warn!(
-                                "loaded theme `{}` but cannot use it because true color \
-                                support is not enabled",
-                                theme.name()
-                            );
-                        }
-                        colors_ok
-                    })
             })
             .unwrap_or_else(|| editor.theme_loader.default_theme(true_color));
         let _ = editor.set_theme(theme);

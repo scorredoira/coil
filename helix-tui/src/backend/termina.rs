@@ -84,6 +84,9 @@ pub struct TerminaBackend {
     /// The terminal emulator's background color. This is queried when claiming the terminal so
     /// that custom colors set outside of Helix with OSC11 are restored when Helix exits.
     original_background_color: Option<RgbColor>,
+    /// Whether colours are drawn as given; otherwise each is drawn as the nearest of the
+    /// 256-colour palette.
+    true_color: bool,
 }
 
 impl TerminaBackend {
@@ -149,7 +152,9 @@ impl TerminaBackend {
             )
         };
         // TODO: tune this poll constant? Does it need to be longer when on an SSH connection?
-        let poll_duration = Duration::from_millis(100);
+        // Over SSH the answers take a round trip; they all come before the device
+        // attributes, which every terminal answers, so waiting longer costs nothing.
+        let poll_duration = Duration::from_millis(500);
         if terminal.poll(device_attributes, Some(poll_duration))? {
             while terminal.poll(Event::is_escape, Some(Duration::ZERO))? {
                 match terminal.read(Event::is_escape)? {
@@ -255,6 +260,7 @@ impl TerminaBackend {
             is_synchronized_output_set: false,
             background_color: None,
             original_background_color,
+            true_color: capabilities.true_color,
         })
     }
 
@@ -480,7 +486,13 @@ impl Backend for TerminaBackend {
         let mut underline_style = UnderlineStyle::Reset;
         let mut modifier = Modifier::empty();
         let mut last_pos: Option<(u16, u16)> = None;
+        let paint = |color: Color| match color {
+            Color::Rgb(r, g, b) if !self.true_color => Color::Indexed(ansi256(r, g, b)),
+            color => color,
+        };
         for (x, y, cell) in content {
+            let (cell_fg, cell_bg, cell_underline) =
+                (paint(cell.fg), paint(cell.bg), paint(cell.underline_color));
             // Move the cursor if the previous location was not (x - 1, y)
             if !matches!(last_pos, Some(p) if x == p.0 + 1 && y == p.1) {
                 write!(
@@ -495,13 +507,13 @@ impl Backend for TerminaBackend {
             last_pos = Some((x, y));
 
             let mut attributes = SgrAttributes::default();
-            if cell.fg != fg {
-                attributes.foreground = Some(cell.fg.into());
-                fg = cell.fg;
+            if cell_fg != fg {
+                attributes.foreground = Some(cell_fg.into());
+                fg = cell_fg;
             }
-            if cell.bg != bg {
-                attributes.background = Some(cell.bg.into());
-                bg = cell.bg;
+            if cell_bg != bg {
+                attributes.background = Some(cell_bg.into());
+                bg = cell_bg;
             }
             if cell.modifier != modifier {
                 attributes.modifiers = diff_modifiers(modifier, cell.modifier);
@@ -512,13 +524,13 @@ impl Backend for TerminaBackend {
             // to not like underline colors and styles being intermixed with other SGRs.
             let mut new_underline_style = cell.underline_style;
             if self.capabilities.extended_underlines {
-                if cell.underline_color != underline_color {
+                if cell_underline != underline_color {
                     write!(
                         self.terminal,
                         "{}",
-                        Csi::Sgr(csi::Sgr::UnderlineColor(cell.underline_color.into()))
+                        Csi::Sgr(csi::Sgr::UnderlineColor(cell_underline.into()))
                     )?;
-                    underline_color = cell.underline_color;
+                    underline_color = cell_underline;
                 }
             } else {
                 match new_underline_style {
@@ -612,6 +624,10 @@ impl Backend for TerminaBackend {
         self.capabilities.true_color
     }
 
+    fn set_true_color(&mut self, true_color: bool) {
+        self.true_color = true_color;
+    }
+
     fn keyboard_enhanced(&self) -> bool {
         self.capabilities.kitty_keyboard == KittyKeyboardSupport::Full
     }
@@ -640,6 +656,31 @@ impl Backend for TerminaBackend {
         } else {
             self.reset_background_color()
         }
+    }
+}
+
+/// The colour of the 256-colour palette nearest `r g b`: of the 6×6×6 cube or the grey ramp.
+fn ansi256(r: u8, g: u8, b: u8) -> u8 {
+    const LEVELS: [i32; 6] = [0, 95, 135, 175, 215, 255];
+    let nearest_level = |value: u8| {
+        (0..6)
+            .min_by_key(|&index| (LEVELS[index] - value as i32).abs())
+            .unwrap_or(0)
+    };
+    let distance = |(r2, g2, b2): (i32, i32, i32)| {
+        let (dr, dg, db) = (r as i32 - r2, g as i32 - g2, b as i32 - b2);
+        dr * dr + dg * dg + db * db
+    };
+    let (ri, gi, bi) = (nearest_level(r), nearest_level(g), nearest_level(b));
+    let cube = 16 + 36 * ri + 6 * gi + bi;
+    let cube_distance = distance((LEVELS[ri], LEVELS[gi], LEVELS[bi]));
+    let average = (r as i32 + g as i32 + b as i32) / 3;
+    let grey = ((average - 8 + 5) / 10).clamp(0, 23);
+    let grey_level = 8 + 10 * grey;
+    if distance((grey_level, grey_level, grey_level)) < cube_distance {
+        (232 + grey) as u8
+    } else {
+        cube as u8
     }
 }
 
@@ -723,4 +764,18 @@ fn diff_modifiers(from: Modifier, to: Modifier) -> SgrModifiers {
     }
 
     modifiers
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ansi256;
+
+    #[test]
+    fn a_colour_is_drawn_as_the_nearest_of_the_palette() {
+        assert_eq!(ansi256(0, 0, 0), 16);
+        assert_eq!(ansi256(255, 255, 255), 231);
+        assert_eq!(ansi256(255, 0, 0), 196);
+        assert_eq!(ansi256(128, 128, 128), 244);
+        assert_eq!(ansi256(0x3b, 0x22, 0x4c), 237);
+    }
 }
