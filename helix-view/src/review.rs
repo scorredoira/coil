@@ -1,7 +1,7 @@
 //! Presentation data for a code review buffer. Its text contains only headings and code;
 //! line identities and syntax belong to the two sides of each file, not to the patch.
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use helix_core::syntax::{Highlight, HighlightEvent, Loader, OverlayHighlights, Syntax};
 use helix_core::text_annotations::InlineAnnotation;
@@ -97,6 +97,19 @@ impl Review {
             new: line.new,
             kind: line.kind,
         })
+    }
+
+    /// The file line a row shows: the file as its side names it, the line from 1, and
+    /// whether that side is the old one, which only a removed line's is.
+    pub fn file_line(&self, row: usize) -> Option<(&Path, usize, bool)> {
+        let line = self.lines.get(row)?;
+        let (source, _) = line.source?;
+        let path = self.sources[source].path.as_path();
+        match (line.new, line.old) {
+            (Some(new), _) => Some((path, new, false)),
+            (None, Some(old)) => Some((path, old, true)),
+            (None, None) => None,
+        }
     }
 
     pub fn find_anchor(&self, anchor: &ReviewAnchor) -> Option<usize> {

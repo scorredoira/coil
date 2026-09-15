@@ -112,12 +112,33 @@ pub struct Blame {
     pub commit: Option<Commit>,
 }
 
-/// A line to blame: the file, its line from 0, and the buffer's text, which is what the line
-/// numbers count.
+/// A line to blame: the file, its line from 0, and the text the line numbers count. A
+/// relative path is relative to the repository's top.
 pub struct BlameRequest {
     pub path: PathBuf,
     pub line: usize,
-    pub contents: String,
+    pub text: BlameText,
+}
+
+/// The text a blamed line is counted in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BlameText {
+    /// A buffer's, unsaved changes and all.
+    Buffer(String),
+    /// The file on disk.
+    Disk,
+    /// The file as a revision left it.
+    Revision(String),
+}
+
+impl BlameText {
+    /// The revision the text is read at, none for what is not committed.
+    pub fn revision(&self) -> Option<&str> {
+        match self {
+            Self::Revision(revision) => Some(revision),
+            Self::Buffer(_) | Self::Disk => None,
+        }
+    }
 }
 
 pub type Answer<T> = Result<T, String>;
@@ -389,23 +410,29 @@ pub fn working_diff(root: &Path, file: &ChangedFile, full_context: bool) -> Answ
     Ok(String::from_utf8_lossy(&patch).into_owned())
 }
 
-/// Blames one line of the buffer's text as git would the file with that text in it: a line
-/// changed since the last commit belongs to no commit.
+/// Blames one line as git would the file with that text in it: a line changed since the last
+/// commit belongs to no commit, and so does every line of a file git does not know.
 pub fn blame(root: &Path, request: &BlameRequest) -> Answer<Blame> {
     let range = format!("{0},{0}", request.line + 1);
-    let mut child = Command::new("git")
+    let path = if request.path.is_relative() {
+        let top = run(root, &["rev-parse", "--show-toplevel"])?;
+        PathBuf::from(String::from_utf8_lossy(&top).trim_end()).join(&request.path)
+    } else {
+        request.path.clone()
+    };
+    let mut command = Command::new("git");
+    command
         .arg("-C")
         .arg(root)
-        .args([
-            "blame",
-            "--porcelain",
-            "-L",
-            &range,
-            "--contents",
-            "-",
-            "--",
-        ])
-        .arg(&request.path)
+        .args(["blame", "--porcelain", "-L", &range]);
+    match &request.text {
+        BlameText::Buffer(_) => command.args(["--contents", "-"]),
+        BlameText::Disk => &mut command,
+        BlameText::Revision(revision) => command.arg(revision),
+    };
+    let mut child = command
+        .arg("--")
+        .arg(&path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -413,9 +440,9 @@ pub fn blame(root: &Path, request: &BlameRequest) -> Answer<Blame> {
         .map_err(|err| format!("git: {err}"))?;
     // git reads the whole text before it answers, and the answer for one line is short, so
     // writing it all first cannot wait on a full pipe.
-    let written = match child.stdin.take() {
-        Some(mut stdin) => stdin.write_all(request.contents.as_bytes()),
-        None => Ok(()),
+    let written = match (child.stdin.take(), &request.text) {
+        (Some(mut stdin), BlameText::Buffer(contents)) => stdin.write_all(contents.as_bytes()),
+        _ => Ok(()),
     };
     let output = child
         .wait_with_output()
@@ -424,6 +451,12 @@ pub fn blame(root: &Path, request: &BlameRequest) -> Answer<Blame> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let reason = stderr.lines().next().unwrap_or("failed").to_string();
+        if request.text == BlameText::Disk && reason.ends_with("in HEAD") {
+            return Ok(Blame {
+                author: "Not Committed Yet".to_string(),
+                commit: None,
+            });
+        }
         return Err(format!("git blame: {reason}"));
     }
     written.map_err(|err| format!("git blame: {err}"))?;

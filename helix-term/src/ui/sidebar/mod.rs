@@ -332,6 +332,13 @@ impl Sidebar {
         self.commits.show_history(&mut cx, path);
     }
 
+    /// The diff buffer's line under the cursor as a line to blame, and the folder to ask git
+    /// in, when the focused view shows the diff buffer on a line of code.
+    pub fn diff_blame_request(&self, editor: &Editor) -> Option<(PathBuf, git::BlameRequest)> {
+        let request = self.diff.blame_request(editor)?;
+        Some((self.root.clone(), request))
+    }
+
     /// Opens `commit` into its files in the Commits tab, focused.
     pub fn open_commit(&mut self, commit: Commit) {
         self.open = true;

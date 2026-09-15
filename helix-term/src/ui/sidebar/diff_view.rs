@@ -88,6 +88,40 @@ impl DiffView {
         self.doc.is_some_and(|id| view!(editor).doc == id)
     }
 
+    /// The line under the cursor of the diff buffer, when it shows one, as a line to blame:
+    /// in the text the commit or the working tree leaves, or, for a removed line, the text
+    /// it was removed from.
+    pub fn blame_request(&self, editor: &Editor) -> Option<git::BlameRequest> {
+        let (view, doc) = current_ref!(editor);
+        let review = doc.review.as_ref().filter(|_| self.doc == Some(doc.id()))?;
+        let (target, _) = self.asked.as_ref()?;
+        let row = doc
+            .selection(view.id)
+            .primary()
+            .cursor_line(doc.text().slice(..));
+        let (path, line, old) = review.file_line(row)?;
+        let (path, text) = match (&target.source, old) {
+            (DiffSource::Commit(hash), false) => {
+                (path.to_path_buf(), git::BlameText::Revision(hash.clone()))
+            }
+            (DiffSource::Commit(hash), true) => (
+                path.to_path_buf(),
+                git::BlameText::Revision(format!("{hash}^")),
+            ),
+            // A file git does not know is named from the workspace, not the repository's top.
+            (DiffSource::WorkingTree(file), false) => (file.path.clone(), git::BlameText::Disk),
+            (DiffSource::WorkingTree(_), true) => (
+                path.to_path_buf(),
+                git::BlameText::Revision("HEAD".to_string()),
+            ),
+        };
+        Some(git::BlameRequest {
+            path,
+            line: line - 1,
+            text,
+        })
+    }
+
     pub fn full_context(&self) -> bool {
         self.full_context
     }

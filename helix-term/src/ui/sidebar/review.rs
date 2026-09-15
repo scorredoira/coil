@@ -405,6 +405,61 @@ mod tests {
     }
 
     #[test]
+    fn a_diff_line_blames_to_the_commit_on_its_side() {
+        use super::super::git::{blame, show, BlameRequest, BlameText};
+        use std::{fs, process::Command};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        git(&["init"]);
+        git(&["config", "user.name", "Review test"]);
+        git(&["config", "user.email", "review@example.invalid"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        fs::create_dir(root.join("sub")).unwrap();
+        fs::write(root.join("sub/code.txt"), "one\ntwo\nthree\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "before"]);
+        let before = git(&["rev-parse", "HEAD"]);
+        fs::write(root.join("sub/code.txt"), "one\nTWO\nthree\n").unwrap();
+        git(&["commit", "-am", "after"]);
+        let after = git(&["rev-parse", "HEAD"]);
+        let parsed = parse(&show(root, &after, &[".".into()], false).unwrap()).unwrap();
+        let review = &parsed.review;
+        let row = |kind| review.lines.iter().position(|l| l.kind == kind).unwrap();
+        // Asked from a folder below the top, where the diff's paths do not start.
+        let ask = |row: usize| {
+            let (path, line, old) = review.file_line(row).unwrap();
+            let revision = if old {
+                format!("{after}^")
+            } else {
+                after.clone()
+            };
+            let request = BlameRequest {
+                path: path.to_path_buf(),
+                line: line - 1,
+                text: BlameText::Revision(revision),
+            };
+            blame(&root.join("sub"), &request)
+                .unwrap()
+                .commit
+                .unwrap()
+                .hash
+        };
+        assert_eq!(ask(row(LineKind::Added)), after);
+        assert_eq!(ask(row(LineKind::Removed)), before);
+        assert_eq!(review.file_line(0), None);
+    }
+
+    #[test]
     fn real_git_root_and_merge_commits_use_the_same_review_format() {
         use std::{fs, process::Command};
         let dir = tempfile::tempdir().unwrap();

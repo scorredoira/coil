@@ -5,13 +5,14 @@
 use std::path::{Path, PathBuf};
 
 use super::Context;
-use crate::ui::sidebar::git::{self, Blame, BlameRequest};
+use crate::ui::sidebar::git::{self, Blame, BlameRequest, BlameText};
 use crate::ui::{self, EditorView};
 
 /// The line blamed last, so blaming it again opens its commit.
 pub struct LastBlame {
     path: PathBuf,
     line: usize,
+    revision: Option<String>,
     blame: Blame,
 }
 
@@ -29,29 +30,42 @@ pub fn file_history(cx: &mut Context) {
 }
 
 /// Says who last changed the line under the cursor, in which commit and when, counting the
-/// buffer's unsaved text; asked again on the same line, opens that commit in the sidebar.
+/// buffer's unsaved text, or, in a diff, in the text the diff shows the line in; asked again
+/// on the same line, opens that commit in the sidebar.
 pub fn blame_line(cx: &mut Context) {
     let (view, doc) = current_ref!(cx.editor);
-    let path = doc.path().map(Path::to_path_buf);
-    let text = doc.text().slice(..);
-    let line = doc.selection(view.id).primary().cursor_line(text);
-    let contents = text.to_string();
     let root = doc.workspace_root().to_path_buf();
-    let Some(path) = path else {
-        cx.editor.set_error("The buffer has no file to blame");
-        return;
-    };
-    let request = BlameRequest {
-        path,
-        line,
-        contents,
-    };
+    let in_review = doc.review.is_some();
+    let buffer = doc.path().map(|path| {
+        let text = doc.text().slice(..);
+        BlameRequest {
+            path: path.to_path_buf(),
+            line: doc.selection(view.id).primary().cursor_line(text),
+            text: BlameText::Buffer(text.to_string()),
+        }
+    });
     cx.callback.push(Box::new(move |compositor, cx| {
         let view = compositor.find::<EditorView>().unwrap();
-        let same_line = view
-            .last_blame
-            .as_ref()
-            .filter(|last| last.path == request.path && last.line == request.line);
+        let (root, request) = match buffer {
+            Some(request) => (root, request),
+            None => match view.sidebar.diff_blame_request(cx.editor) {
+                Some(found) => found,
+                None if in_review => {
+                    cx.editor
+                        .set_error("Put the cursor on a line of code to blame it");
+                    return;
+                }
+                None => {
+                    cx.editor.set_error("The buffer has no file to blame");
+                    return;
+                }
+            },
+        };
+        let same_line = view.last_blame.as_ref().filter(|last| {
+            last.path == request.path
+                && last.line == request.line
+                && last.revision.as_deref() == request.text.revision()
+        });
         if let Some(last) = same_line {
             match last.blame.commit.clone() {
                 Some(commit) => view.sidebar.open_commit(commit),
@@ -83,6 +97,7 @@ pub fn blame_line(cx: &mut Context) {
                     None => editor.set_status("Not committed yet"),
                 }
                 view.last_blame = Some(LastBlame {
+                    revision: request.text.revision().map(str::to_string),
                     path: request.path,
                     line: request.line,
                     blame,
